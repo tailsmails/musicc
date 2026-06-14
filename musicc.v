@@ -107,7 +107,7 @@ mut:
 	num_vars         int
 	vars_l           []f64
 	vars_r           []f64
-	delays           map[int]FastDelayLine
+	delays           []FastDelayLine
 	prev_filter_l    []f64
 	prev_filter_r    []f64
 	comp_env_l       []f64
@@ -116,13 +116,13 @@ mut:
 	svf_ic2_l        []f64
 	svf_ic1_r        []f64
 	svf_ic2_r        []f64
-	reverb_buf_l     map[int][][]f64
-	reverb_buf_r     map[int][][]f64
-	reverb_idx_l     map[int][]int
-	reverb_idx_r     map[int][]int
-	chorus_buf_l     map[int][]f64
-	chorus_buf_r     map[int][]f64
-	chorus_idx       map[int]int
+	reverb_buf_l     [][][]f64
+	reverb_buf_r     [][][]f64
+	reverb_idx_l     [][]int
+	reverb_idx_r     [][]int
+	chorus_buf_l     [][]f64
+	chorus_buf_r     [][]f64
+	chorus_idx       []int
 }
 
 struct RenderRange {
@@ -423,7 +423,7 @@ fn compile_shader(sh AudioShader) FastAudioShader {
 	mut svf_ic1_r := []f64{len: next_id * 20, init: 0.0}
 	mut svf_ic2_r := []f64{len: next_id * 20, init: 0.0}
 
-	mut delays := map[int]FastDelayLine{}
+	mut delays := []FastDelayLine{len: next_id}
 	for name, dl in sh.delays {
 		id := var_to_id[name]
 		delays[id] = FastDelayLine{
@@ -450,20 +450,20 @@ fn compile_shader(sh AudioShader) FastAudioShader {
 		svf_ic2_l: svf_ic2_l
 		svf_ic1_r: svf_ic1_r
 		svf_ic2_r: svf_ic2_r
-		reverb_buf_l: map[int][][]f64{}
-		reverb_buf_r: map[int][][]f64{}
-		reverb_idx_l: map[int][]int{}
-		reverb_idx_r: map[int][]int{}
-		chorus_buf_l: map[int][]f64{}
-		chorus_buf_r: map[int][]f64{}
-		chorus_idx: map[int]int{}
+		reverb_buf_l: [][][]f64{len: next_id}
+		reverb_buf_r: [][][]f64{len: next_id}
+		reverb_idx_l: [][]int{len: next_id}
+		reverb_idx_r: [][]int{len: next_id}
+		chorus_buf_l: [][]f64{len: next_id}
+		chorus_buf_r: [][]f64{len: next_id}
+		chorus_idx: []int{len: next_id, init: 0}
 	}
 }
 
 fn clone_fast_shaders(shaders map[string]FastAudioShader) map[string]FastAudioShader {
 	mut cloned := map[string]FastAudioShader{}
 	for name, sh in shaders {
-		mut cloned_delays := map[int]FastDelayLine{}
+		mut cloned_delays := []FastDelayLine{len: sh.delays.len}
 		for d_idx, dl in sh.delays {
 			cloned_delays[d_idx] = FastDelayLine{
 				buffer_l: dl.buffer_l.clone()
@@ -472,6 +472,37 @@ fn clone_fast_shaders(shaders map[string]FastAudioShader) map[string]FastAudioSh
 				feedback: dl.feedback
 			}
 		}
+		
+		mut cloned_reverb_buf_l := [][][]f64{len: sh.reverb_buf_l.len}
+		mut cloned_reverb_buf_r := [][][]f64{len: sh.reverb_buf_r.len}
+		for i_id in 0 .. sh.reverb_buf_l.len {
+			mut rbl := [][]f64{len: sh.reverb_buf_l[i_id].len}
+			for i_comb in 0 .. sh.reverb_buf_l[i_id].len {
+				rbl[i_comb] = sh.reverb_buf_l[i_id][i_comb].clone()
+			}
+			cloned_reverb_buf_l[i_id] = rbl
+
+			mut rbr := [][]f64{len: sh.reverb_buf_r[i_id].len}
+			for i_comb in 0 .. sh.reverb_buf_r[i_id].len {
+				rbr[i_comb] = sh.reverb_buf_r[i_id][i_comb].clone()
+			}
+			cloned_reverb_buf_r[i_id] = rbr
+		}
+		
+		mut cloned_reverb_idx_l := [][]int{len: sh.reverb_idx_l.len}
+		mut cloned_reverb_idx_r := [][]int{len: sh.reverb_idx_r.len}
+		for i_id in 0 .. sh.reverb_idx_l.len {
+			cloned_reverb_idx_l[i_id] = sh.reverb_idx_l[i_id].clone()
+			cloned_reverb_idx_r[i_id] = sh.reverb_idx_r[i_id].clone()
+		}
+		
+		mut cloned_chorus_buf_l := [][]f64{len: sh.chorus_buf_l.len}
+		mut cloned_chorus_buf_r := [][]f64{len: sh.chorus_buf_r.len}
+		for i_id in 0 .. sh.chorus_buf_l.len {
+			cloned_chorus_buf_l[i_id] = sh.chorus_buf_l[i_id].clone()
+			cloned_chorus_buf_r[i_id] = sh.chorus_buf_r[i_id].clone()
+		}
+
 		cloned[name] = FastAudioShader{
 			name: sh.name
 			instructions: sh.instructions.clone()
@@ -488,12 +519,12 @@ fn clone_fast_shaders(shaders map[string]FastAudioShader) map[string]FastAudioSh
 			svf_ic2_l: sh.svf_ic2_l.clone()
 			svf_ic1_r: sh.svf_ic1_r.clone()
 			svf_ic2_r: sh.svf_ic2_r.clone()
-			reverb_buf_l: sh.reverb_buf_l.clone()
-			reverb_buf_r: sh.reverb_buf_r.clone()
-			reverb_idx_l: sh.reverb_idx_l.clone()
-			reverb_idx_r: sh.reverb_idx_r.clone()
-			chorus_buf_l: sh.chorus_buf_l.clone()
-			chorus_buf_r: sh.chorus_buf_r.clone()
+			reverb_buf_l: cloned_reverb_buf_l
+			reverb_buf_r: cloned_reverb_buf_r
+			reverb_idx_l: cloned_reverb_idx_l
+			reverb_idx_r: cloned_reverb_idx_r
+			chorus_buf_l: cloned_chorus_buf_l
+			chorus_buf_r: cloned_chorus_buf_r
 			chorus_idx: sh.chorus_idx.clone()
 		}
 	}
@@ -513,18 +544,20 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 		id := inst.out_var_id
 		match inst.op {
 			'delay' {
-				mut dl := shader.delays[id] or { continue }
-				delay_l := dl.buffer_l[dl.write_idx]
-				delay_r := dl.buffer_r[dl.write_idx]
-				shader.vars_l[id] = delay_l
-				shader.vars_r[id] = delay_r
+				mut dl := shader.delays[id]
+				if dl.buffer_l.len > 0 {
+					delay_l := dl.buffer_l[dl.write_idx]
+					delay_r := dl.buffer_r[dl.write_idx]
+					shader.vars_l[id] = delay_l
+					shader.vars_r[id] = delay_r
 
-				input_to_delay_l := shader.vars_l[0]
-				input_to_delay_r := shader.vars_r[0]
-				dl.buffer_l[dl.write_idx] = input_to_delay_l + delay_l * dl.feedback
-				dl.buffer_r[dl.write_idx] = input_to_delay_r + delay_r * dl.feedback
-				dl.write_idx = (dl.write_idx + 1) % dl.buffer_l.len
-				shader.delays[id] = dl
+					input_to_delay_l := shader.vars_l[0]
+					input_to_delay_r := shader.vars_r[0]
+					dl.buffer_l[dl.write_idx] = input_to_delay_l + delay_l * dl.feedback
+					dl.buffer_r[dl.write_idx] = input_to_delay_r + delay_r * dl.feedback
+					dl.write_idx = (dl.write_idx + 1) % dl.buffer_l.len
+					shader.delays[id] = dl
+				}
 			}
 			'mix' {
 				mut sum_l := 0.0
@@ -689,8 +722,8 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 
 				comb_lens_l := [1116, 1188, 1277, 1356]
 				comb_lens_r := [1213, 1134, 1301, 1267]
-
-				if id !in shader.reverb_buf_l {
+				
+				if shader.reverb_buf_l[id].len == 0 {
 					mut bl := [][]f64{}
 					mut br := [][]f64{}
 					for sz in comb_lens_l { bl << []f64{len: sz, init: 0.0} }
@@ -745,7 +778,7 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 
 				buf_size := 4410
 
-				if id !in shader.chorus_buf_l {
+				if shader.chorus_buf_l[id].len == 0 {
 					shader.chorus_buf_l[id] = []f64{len: buf_size, init: 0.0}
 					shader.chorus_buf_r[id] = []f64{len: buf_size, init: 0.0}
 					shader.chorus_idx[id] = 0
@@ -814,21 +847,31 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 				gain := inst.args[0].val
 
 				mut out_l := val_l * gain
-				for out_l > 1.0 || out_l < -1.0 {
+				mut iter_l := 0
+				for (out_l > 1.0 || out_l < -1.0) && iter_l < 100 {
 					if out_l > 1.0 {
 						out_l = 2.0 - out_l
 					} else if out_l < -1.0 {
 						out_l = -2.0 - out_l
 					}
+					iter_l++
+				}
+				if iter_l >= 100 {
+					out_l = if out_l > 0 { 1.0 } else { -1.0 }
 				}
 
 				mut out_r := val_r * gain
-				for out_r > 1.0 || out_r < -1.0 {
+				mut iter_r := 0
+				for (out_r > 1.0 || out_r < -1.0) && iter_r < 100 {
 					if out_r > 1.0 {
 						out_r = 2.0 - out_r
 					} else if out_r < -1.0 {
 						out_r = -2.0 - out_r
 					}
+					iter_r++
+				}
+				if iter_r >= 100 {
+					out_r = if out_r > 0 { 1.0 } else { -1.0 }
 				}
 
 				shader.vars_l[id] = out_l
@@ -1023,16 +1066,21 @@ fn interpret_track(commands []Command, single_samples map[string]SingleSampleIns
 	}
 
 	mut processed_pcm := []f64{cap: dry_pcm.len}
+	
+	mut active_fx := []FastAudioShader{}
+	for fx_name in track_effects {
+		if fx_name in local_shaders {
+			active_fx << local_shaders[fx_name]
+		}
+	}
+
 	mut i := 0
 	for i < dry_pcm.len - 1 {
 		t := f64(i / 2) / f64(sample_rate)
 		mut left_val := dry_pcm[i]
 		mut right_val := dry_pcm[i + 1]
-		for fx_name in track_effects {
-			if fx_name in local_shaders {
-				left_val, right_val = apply_fast_shader(mut local_shaders[fx_name], left_val,
-					right_val, t)
-			}
+		for mut fx in active_fx {
+			left_val, right_val = apply_fast_shader(mut fx, left_val, right_val, t)
 		}
 		processed_pcm << left_val
 		processed_pcm << right_val
@@ -1042,7 +1090,7 @@ fn interpret_track(commands []Command, single_samples map[string]SingleSampleIns
 }
 
 fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]FastAudioShader, sample_rate u32, max_samples_limit int) []f64 {
-	mut track_pcm := []f64{}
+	mut track_pcm := []f64{cap: 1000000}
 	mut loop_stack := []LoopState{}
 	mut ip := 0
 	mut prev_filter_val := 0.0
@@ -1077,7 +1125,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 				duration_sec := f64(cmd.duration_ms) / 1000.0
 				num_samples := int(f64(sample_rate) * duration_sec)
 
-				mut generated_pcm := []f64{}
+				mut generated_pcm := []f64{cap: num_samples}
 
 				if cmd.wave_type in single_samples {
 					inst := single_samples[cmd.wave_type]
@@ -1381,15 +1429,19 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 					}
 				}
 
+				mut active_fx := []FastAudioShader{}
+				for fx_name in cmd.effects_chain {
+					if fx_name in active_shaders {
+						active_fx << active_shaders[fx_name]
+					}
+				}
+
 				for i, sample_val in generated_pcm {
 					t := f64(i) / f64(sample_rate)
 					mut left_val := sample_val
 					mut right_val := sample_val
-					for fx_name in cmd.effects_chain {
-						if fx_name in active_shaders {
-							left_val, right_val = apply_fast_shader(mut active_shaders[fx_name],
-								left_val, right_val, t)
-						}
+					for mut fx in active_fx {
+						left_val, right_val = apply_fast_shader(mut fx, left_val, right_val, t)
 					}
 					track_pcm << left_val
 					track_pcm << right_val
@@ -1882,7 +1934,7 @@ fn main() {
 		fast_active_shaders[name] = compile_shader(sh)
 	}
 
-	mut master_dry_pcm := []f64{}
+	mut master_dry_pcm := []f64{cap: 10000000}
 	volume := 28000.0 * master_volume_factor
 
 	println('[*] Interpreting instructions and generating audio...')
@@ -1931,7 +1983,7 @@ fn main() {
 					if name in defined_tracks {
 						track_cmds := defined_tracks[name]
 						fx := track_effects[name] or { []string{} }
-						threads << go interpret_track(track_cmds, single_samples, multi_samples,
+						threads << spawn interpret_track(track_cmds, single_samples, multi_samples,
 							custom_synths, fast_active_shaders, fx, sample_rate, max_samples_limit)
 						track_vols << vol
 					} else {
@@ -1994,16 +2046,20 @@ fn main() {
 	println('[*] Applying master bus effects...')
 	mut master_wet_pcm := []f64{cap: master_dry_pcm.len}
 	if master_effects.len > 0 {
+		mut active_master_fx := []FastAudioShader{}
+		for fx_name in master_effects {
+			if fx_name in fast_active_shaders {
+				active_master_fx << fast_active_shaders[fx_name]
+			}
+		}
+
 		mut k := 0
 		for k < master_dry_pcm.len - 1 {
 			t := f64(k / 2) / f64(sample_rate)
 			mut left_val := master_dry_pcm[k]
 			mut right_val := master_dry_pcm[k + 1]
-			for fx_name in master_effects {
-				if fx_name in fast_active_shaders {
-					left_val, right_val = apply_fast_shader(mut fast_active_shaders[fx_name], left_val,
-						right_val, t)
-				}
+			for mut fx in active_master_fx {
+				left_val, right_val = apply_fast_shader(mut fx, left_val, right_val, t)
 			}
 			master_wet_pcm << left_val
 			master_wet_pcm << right_val
