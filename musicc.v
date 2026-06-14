@@ -70,6 +70,61 @@ mut:
 	chorus_idx       map[string]int
 }
 
+struct FastMixPair {
+	is_var bool
+	var_id int
+	val    f64
+	weight f64
+}
+
+struct FastArg {
+	is_var bool
+	var_id int
+	val    f64
+}
+
+struct FastInstruction {
+	op         string
+	out_var_id int
+	args       []FastArg
+	mix_pairs  []FastMixPair
+	str_args   []string
+}
+
+struct FastDelayLine {
+mut:
+	buffer_l  []f64
+	buffer_r  []f64
+	write_idx int
+	feedback  f64
+}
+
+struct FastAudioShader {
+	name string
+mut:
+	instructions     []FastInstruction
+	var_to_id        map[string]int
+	num_vars         int
+	vars_l           []f64
+	vars_r           []f64
+	delays           map[int]FastDelayLine
+	prev_filter_l    []f64
+	prev_filter_r    []f64
+	comp_env_l       []f64
+	comp_env_r       []f64
+	svf_ic1_l        []f64
+	svf_ic2_l        []f64
+	svf_ic1_r        []f64
+	svf_ic2_r        []f64
+	reverb_buf_l     map[int][][]f64
+	reverb_buf_r     map[int][][]f64
+	reverb_idx_l     map[int][]int
+	reverb_idx_r     map[int][]int
+	chorus_buf_l     map[int][]f64
+	chorus_buf_r     map[int][]f64
+	chorus_idx       map[int]int
+}
+
 struct RenderRange {
 	start_sec f64
 	end_sec   f64
@@ -278,34 +333,155 @@ fn load_wav(path string) WavSample {
 	}
 }
 
-fn clone_shaders(shaders map[string]AudioShader) map[string]AudioShader {
-	mut cloned := map[string]AudioShader{}
+fn compile_shader(sh AudioShader) FastAudioShader {
+	mut var_to_id := map[string]int{}
+	mut next_id := 0
+	
+	var_to_id['x'] = 0
+	var_to_id['y'] = 1
+	next_id = 2
+
+	for inst in sh.instructions {
+		if inst.out_var !in var_to_id {
+			var_to_id[inst.out_var] = next_id
+			next_id++
+		}
+		for arg in inst.args {
+			if arg.len > 0 && ((arg[0] >= `a` && arg[0] <= `z`) || (arg[0] >= `A` && arg[0] <= `Z`)) {
+				if arg !in ['lowpass', 'highpass', 'bandpass', 'notch', 'tanh', 'hard', 'soft', 'fold', 'tremolo', 'ring', 'a', 'e', 'i', 'o', 'u'] {
+					if arg !in var_to_id {
+						var_to_id[arg] = next_id
+						next_id++
+					}
+				}
+			}
+		}
+	}
+
+	mut fast_instructions := []FastInstruction{}
+
+	for inst in sh.instructions {
+		out_id := var_to_id[inst.out_var]
+		mut args := []FastArg{}
+		mut mix_pairs := []FastMixPair{}
+		mut str_args := []string{}
+
+		if inst.op == 'mix' {
+			mut i := 0
+			for i < inst.args.len - 1 {
+				var_name := inst.args[i]
+				weight := inst.args[i + 1].f64()
+				is_var := (var_name[0] >= `a` && var_name[0] <= `z`) || (var_name[0] >= `A` && var_name[0] <= `Z`)
+				mut var_id := -1
+				mut val := 0.0
+				if is_var {
+					var_id = var_to_id[var_name]
+				} else {
+					val = var_name.f64()
+				}
+				mix_pairs << FastMixPair{
+					is_var: is_var
+					var_id: var_id
+					val: val
+					weight: weight
+				}
+				i += 2
+			}
+		} else {
+			for arg in inst.args {
+				is_alpha := arg.len > 0 && ((arg[0] >= `a` && arg[0] <= `z`) || (arg[0] >= `A` && arg[0] <= `Z`))
+				is_keyword := arg in ['lowpass', 'highpass', 'bandpass', 'notch', 'tanh', 'hard', 'soft', 'fold', 'tremolo', 'ring', 'a', 'e', 'i', 'o', 'u']
+				
+				if is_alpha && !is_keyword {
+					var_id := var_to_id[arg]
+					args << FastArg{ is_var: true, var_id: var_id, val: 0.0 }
+				} else if is_keyword {
+					str_args << arg
+				} else {
+					args << FastArg{ is_var: false, var_id: -1, val: arg.f64() }
+				}
+			}
+		}
+
+		fast_instructions << FastInstruction{
+			op: inst.op
+			out_var_id: out_id
+			args: args
+			mix_pairs: mix_pairs
+			str_args: str_args
+		}
+	}
+	
+	mut vars_l := []f64{len: next_id, init: 0.0}
+	mut vars_r := []f64{len: next_id, init: 0.0}
+	mut prev_filter_l := []f64{len: next_id * 20, init: 0.0}
+	mut prev_filter_r := []f64{len: next_id * 20, init: 0.0}
+	mut comp_env_l := []f64{len: next_id, init: 0.0}
+	mut comp_env_r := []f64{len: next_id, init: 0.0}
+	mut svf_ic1_l := []f64{len: next_id * 20, init: 0.0}
+	mut svf_ic2_l := []f64{len: next_id * 20, init: 0.0}
+	mut svf_ic1_r := []f64{len: next_id * 20, init: 0.0}
+	mut svf_ic2_r := []f64{len: next_id * 20, init: 0.0}
+
+	mut delays := map[int]FastDelayLine{}
+	for name, dl in sh.delays {
+		id := var_to_id[name]
+		delays[id] = FastDelayLine{
+			buffer_l: dl.buffer_l.clone()
+			buffer_r: dl.buffer_r.clone()
+			write_idx: dl.write_idx
+			feedback: dl.feedback
+		}
+	}
+
+	return FastAudioShader{
+		name: sh.name
+		instructions: fast_instructions
+		var_to_id: var_to_id
+		num_vars: next_id
+		vars_l: vars_l
+		vars_r: vars_r
+		delays: delays
+		prev_filter_l: prev_filter_l
+		prev_filter_r: prev_filter_r
+		comp_env_l: comp_env_l
+		comp_env_r: comp_env_r
+		svf_ic1_l: svf_ic1_l
+		svf_ic2_l: svf_ic2_l
+		svf_ic1_r: svf_ic1_r
+		svf_ic2_r: svf_ic2_r
+		reverb_buf_l: map[int][][]f64{}
+		reverb_buf_r: map[int][][]f64{}
+		reverb_idx_l: map[int][]int{}
+		reverb_idx_r: map[int][]int{}
+		chorus_buf_l: map[int][]f64{}
+		chorus_buf_r: map[int][]f64{}
+		chorus_idx: map[int]int{}
+	}
+}
+
+fn clone_fast_shaders(shaders map[string]FastAudioShader) map[string]FastAudioShader {
+	mut cloned := map[string]FastAudioShader{}
 	for name, sh in shaders {
-		mut cloned_delays := map[string]DelayLine{}
-		for d_name, dl in sh.delays {
-			cloned_delays[d_name] = DelayLine{
+		mut cloned_delays := map[int]FastDelayLine{}
+		for d_idx, dl in sh.delays {
+			cloned_delays[d_idx] = FastDelayLine{
 				buffer_l: dl.buffer_l.clone()
 				buffer_r: dl.buffer_r.clone()
 				write_idx: dl.write_idx
 				feedback: dl.feedback
 			}
 		}
-		mut cloned_filters_l := map[string]f64{}
-		for k, v in sh.prev_filter_l {
-			cloned_filters_l[k] = v
-		}
-		mut cloned_filters_r := map[string]f64{}
-		for k, v in sh.prev_filter_r {
-			cloned_filters_r[k] = v
-		}
-		cloned[name] = AudioShader{
+		cloned[name] = FastAudioShader{
 			name: sh.name
 			instructions: sh.instructions.clone()
-			delays: cloned_delays
-			prev_filter_l: cloned_filters_l
-			prev_filter_r: cloned_filters_r
+			var_to_id: sh.var_to_id.clone()
+			num_vars: sh.num_vars
 			vars_l: sh.vars_l.clone()
 			vars_r: sh.vars_r.clone()
+			delays: cloned_delays
+			prev_filter_l: sh.prev_filter_l.clone()
+			prev_filter_r: sh.prev_filter_r.clone()
 			comp_env_l: sh.comp_env_l.clone()
 			comp_env_r: sh.comp_env_r.clone()
 			svf_ic1_l: sh.svf_ic1_l.clone()
@@ -324,52 +500,48 @@ fn clone_shaders(shaders map[string]AudioShader) map[string]AudioShader {
 	return cloned
 }
 
-fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f64) {
-	shader.vars_l['x'] = input_l
-	shader.vars_r['x'] = input_r
-	shader.vars_l['y'] = input_l
-	shader.vars_r['y'] = input_r
+fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64) (f64, f64) {
+	shader.vars_l[0] = input_l
+	shader.vars_r[0] = input_r
+	shader.vars_l[1] = input_l
+	shader.vars_r[1] = input_r
 
 	sample_rate := 44100.0
+	num_vars := shader.num_vars
 
 	for inst in shader.instructions {
+		id := inst.out_var_id
 		match inst.op {
 			'delay' {
-				name := inst.out_var
-				mut dl := shader.delays[name] or { continue }
+				mut dl := shader.delays[id] or { continue }
 				delay_l := dl.buffer_l[dl.write_idx]
 				delay_r := dl.buffer_r[dl.write_idx]
-				shader.vars_l[name] = delay_l
-				shader.vars_r[name] = delay_r
+				shader.vars_l[id] = delay_l
+				shader.vars_r[id] = delay_r
 
-				input_to_delay_l := shader.vars_l['x']
-				input_to_delay_r := shader.vars_r['x']
+				input_to_delay_l := shader.vars_l[0]
+				input_to_delay_r := shader.vars_r[0]
 				dl.buffer_l[dl.write_idx] = input_to_delay_l + delay_l * dl.feedback
 				dl.buffer_r[dl.write_idx] = input_to_delay_r + delay_r * dl.feedback
 				dl.write_idx = (dl.write_idx + 1) % dl.buffer_l.len
-				shader.delays[name] = dl
+				shader.delays[id] = dl
 			}
 			'mix' {
 				mut sum_l := 0.0
 				mut sum_r := 0.0
-				mut i := 0
-				for i < inst.args.len - 1 {
-					var_name := inst.args[i]
-					weight := inst.args[i + 1].f64()
-					is_var_l := (var_name[0] >= `a` && var_name[0] <= `z`) || (var_name[0] >= `A` && var_name[0] <= `Z`)
-					val_l := if is_var_l { shader.vars_l[var_name] } else { var_name.f64() }
-					val_r := if is_var_l { shader.vars_r[var_name] } else { var_name.f64() }
-					sum_l += val_l * weight
-					sum_r += val_r * weight
-					i += 2
+				for pair in inst.mix_pairs {
+					val_l := if pair.is_var { shader.vars_l[pair.var_id] } else { pair.val }
+					val_r := if pair.is_var { shader.vars_r[pair.var_id] } else { pair.val }
+					sum_l += val_l * pair.weight
+					sum_r += val_r * pair.weight
 				}
-				shader.vars_l[inst.out_var] = sum_l
-				shader.vars_r[inst.out_var] = sum_r
+				shader.vars_l[id] = sum_l
+				shader.vars_r[id] = sum_r
 			}
 			'saturate' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				sat_type := inst.args[0]
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				sat_type := inst.str_args[0]
 				mut sat_l := val_l
 				mut sat_r := val_r
 				match sat_type {
@@ -391,45 +563,45 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 					}
 					else {}
 				}
-				shader.vars_l[inst.out_var] = sat_l
-				shader.vars_r[inst.out_var] = sat_r
+				shader.vars_l[id] = sat_l
+				shader.vars_r[id] = sat_r
 			}
 			'filter' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				filter_type := inst.args[0]
-				cutoff := inst.args[1].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				filter_type := inst.str_args[0]
+				cutoff := inst.args[0].val
 
-				mut prev_l := shader.prev_filter_l[inst.out_var]
-				mut prev_r := shader.prev_filter_r[inst.out_var]
+				mut prev_l := shader.prev_filter_l[id]
+				mut prev_r := shader.prev_filter_r[id]
 				if filter_type == 'lowpass' {
 					prev_l = prev_l + cutoff * (val_l - prev_l)
 					prev_r = prev_r + cutoff * (val_r - prev_r)
-					shader.vars_l[inst.out_var] = prev_l
-					shader.vars_r[inst.out_var] = prev_r
+					shader.vars_l[id] = prev_l
+					shader.vars_r[id] = prev_r
 				} else if filter_type == 'highpass' {
 					prev_l = prev_l + cutoff * (val_l - prev_l)
 					prev_r = prev_r + cutoff * (val_r - prev_r)
-					shader.vars_l[inst.out_var] = val_l - prev_l
-					shader.vars_r[inst.out_var] = val_r - prev_r
+					shader.vars_l[id] = val_l - prev_l
+					shader.vars_r[id] = val_r - prev_r
 				}
-				shader.prev_filter_l[inst.out_var] = prev_l
-				shader.prev_filter_r[inst.out_var] = prev_r
+				shader.prev_filter_l[id] = prev_l
+				shader.prev_filter_r[id] = prev_r
 			}
 			'compressor' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				threshold_db := inst.args[0].f64()
-				ratio := inst.args[1].f64()
-				attack_ms := inst.args[2].f64()
-				release_ms := inst.args[3].f64()
-				makeup_db := inst.args[4].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				threshold_db := inst.args[0].val
+				ratio := inst.args[1].val
+				attack_ms := inst.args[2].val
+				release_ms := inst.args[3].val
+				makeup_db := inst.args[4].val
 
 				t_att := math.exp(-1.0 / (sample_rate * (attack_ms / 1000.0)))
 				t_rel := math.exp(-1.0 / (sample_rate * (release_ms / 1000.0)))
 
-				mut env_l := shader.comp_env_l[inst.out_var]
-				mut env_r := shader.comp_env_r[inst.out_var]
+				mut env_l := shader.comp_env_l[id]
+				mut env_r := shader.comp_env_r[id]
 
 				abs_l := math.abs(val_l)
 				abs_r := math.abs(val_r)
@@ -437,8 +609,8 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				env_l = if abs_l > env_l { t_att * env_l + (1.0 - t_att) * abs_l } else { t_rel * env_l + (1.0 - t_rel) * abs_l }
 				env_r = if abs_r > env_r { t_att * env_r + (1.0 - t_att) * abs_r } else { t_rel * env_r + (1.0 - t_rel) * abs_r }
 
-				shader.comp_env_l[inst.out_var] = env_l
-				shader.comp_env_r[inst.out_var] = env_r
+				shader.comp_env_l[id] = env_l
+				shader.comp_env_r[id] = env_r
 
 				env_db_l := 20.0 * math.log10(env_l + 1e-6)
 				env_db_r := 20.0 * math.log10(env_r + 1e-6)
@@ -456,25 +628,25 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				total_gain_l := math.pow(10.0, (gain_db_l + makeup_db) / 20.0)
 				total_gain_r := math.pow(10.0, (gain_db_r + makeup_db) / 20.0)
 
-				shader.vars_l[inst.out_var] = val_l * total_gain_l
-				shader.vars_r[inst.out_var] = val_r * total_gain_r
+				shader.vars_l[id] = val_l * total_gain_l
+				shader.vars_r[id] = val_r * total_gain_r
 			}
 			'svf' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				f_type := inst.args[0]
-				cutoff := inst.args[1].f64()
-				q := inst.args[2].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				f_type := inst.str_args[0]
+				cutoff := inst.args[0].val
+				q := inst.args[1].val
 
 				mut f := 2.0 * math.sin(math.pi * cutoff / sample_rate)
 				if f < 0.001 { f = 0.001 }
 				if f > 0.99 { f = 0.99 }
 				d := 1.0 / q
 
-				mut ic1_l := shader.svf_ic1_l[inst.out_var]
-				mut ic2_l := shader.svf_ic2_l[inst.out_var]
-				mut ic1_r := shader.svf_ic1_r[inst.out_var]
-				mut ic2_r := shader.svf_ic2_r[inst.out_var]
+				mut ic1_l := shader.svf_ic1_l[id]
+				mut ic2_l := shader.svf_ic2_l[id]
+				mut ic1_r := shader.svf_ic1_r[id]
+				mut ic2_r := shader.svf_ic2_r[id]
 
 				hp_l := val_l - ic2_l - d * ic1_l
 				bp_l := ic1_l + f * hp_l
@@ -488,10 +660,10 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				ic1_r = bp_r + f * hp_r
 				ic2_r = lp_r + f * bp_r
 
-				shader.svf_ic1_l[inst.out_var] = ic1_l
-				shader.svf_ic2_l[inst.out_var] = ic2_l
-				shader.svf_ic1_r[inst.out_var] = ic1_r
-				shader.svf_ic2_r[inst.out_var] = ic2_r
+				shader.svf_ic1_l[id] = ic1_l
+				shader.svf_ic2_l[id] = ic2_l
+				shader.svf_ic1_r[id] = ic1_r
+				shader.svf_ic2_r[id] = ic2_r
 
 				mut out_l := val_l
 				mut out_r := val_r
@@ -504,35 +676,35 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 					else {}
 				}
 
-				shader.vars_l[inst.out_var] = out_l
-				shader.vars_r[inst.out_var] = out_r
+				shader.vars_l[id] = out_l
+				shader.vars_r[id] = out_r
 			}
 			'reverb' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				size := inst.args[0].f64()
-				damp := inst.args[1].f64()
-				wet := inst.args[2].f64()
-				dry := inst.args[3].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				size := inst.args[0].val
+				damp := inst.args[1].val
+				wet := inst.args[2].val
+				dry := inst.args[3].val
 
 				comb_lens_l := [1116, 1188, 1277, 1356]
 				comb_lens_r := [1213, 1134, 1301, 1267]
 
-				if inst.out_var !in shader.reverb_buf_l {
+				if id !in shader.reverb_buf_l {
 					mut bl := [][]f64{}
 					mut br := [][]f64{}
 					for sz in comb_lens_l { bl << []f64{len: sz, init: 0.0} }
 					for sz in comb_lens_r { br << []f64{len: sz, init: 0.0} }
-					shader.reverb_buf_l[inst.out_var] = bl
-					shader.reverb_buf_r[inst.out_var] = br
-					shader.reverb_idx_l[inst.out_var] = [0, 0, 0, 0]
-					shader.reverb_idx_r[inst.out_var] = [0, 0, 0, 0]
+					shader.reverb_buf_l[id] = bl
+					shader.reverb_buf_r[id] = br
+					shader.reverb_idx_l[id] = [0, 0, 0, 0]
+					shader.reverb_idx_r[id] = [0, 0, 0, 0]
 				}
 
-				mut bufs_l := shader.reverb_buf_l[inst.out_var]
-				mut bufs_r := shader.reverb_buf_r[inst.out_var]
-				mut idxs_l := shader.reverb_idx_l[inst.out_var]
-				mut idxs_r := shader.reverb_idx_r[inst.out_var]
+				mut bufs_l := shader.reverb_buf_l[id]
+				mut bufs_r := shader.reverb_buf_r[id]
+				mut idxs_l := shader.reverb_idx_l[id]
+				mut idxs_r := shader.reverb_idx_r[id]
 
 				feedback := 0.7 * size
 				mut comb_sum_l := 0.0
@@ -552,36 +724,36 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 					idxs_r[k] = (idxs_r[k] + 1) % comb_lens_r[k]
 				}
 
-				shader.reverb_buf_l[inst.out_var] = bufs_l
-				shader.reverb_buf_r[inst.out_var] = bufs_r
-				shader.reverb_idx_l[inst.out_var] = idxs_l
-				shader.reverb_idx_r[inst.out_var] = idxs_r
+				shader.reverb_buf_l[id] = bufs_l
+				shader.reverb_buf_r[id] = bufs_r
+				shader.reverb_idx_l[id] = idxs_l
+				shader.reverb_idx_r[id] = idxs_r
 
 				mixed_l := val_l * dry + (comb_sum_l * 0.25) * wet
 				mixed_r := val_r * dry + (comb_sum_r * 0.25) * wet
 
-				shader.vars_l[inst.out_var] = mixed_l
-				shader.vars_r[inst.out_var] = mixed_r
+				shader.vars_l[id] = mixed_l
+				shader.vars_r[id] = mixed_r
 			}
 			'chorus' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				rate := inst.args[0].f64()
-				depth := inst.args[1].f64()
-				fb := inst.args[2].f64()
-				mix := inst.args[3].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				rate := inst.args[0].val
+				depth := inst.args[1].val
+				fb := inst.args[2].val
+				mix := inst.args[3].val
 
 				buf_size := 4410
 
-				if inst.out_var !in shader.chorus_buf_l {
-					shader.chorus_buf_l[inst.out_var] = []f64{len: buf_size, init: 0.0}
-					shader.chorus_buf_r[inst.out_var] = []f64{len: buf_size, init: 0.0}
-					shader.chorus_idx[inst.out_var] = 0
+				if id !in shader.chorus_buf_l {
+					shader.chorus_buf_l[id] = []f64{len: buf_size, init: 0.0}
+					shader.chorus_buf_r[id] = []f64{len: buf_size, init: 0.0}
+					shader.chorus_idx[id] = 0
 				}
 
-				mut c_buf_l := shader.chorus_buf_l[inst.out_var]
-				mut c_buf_r := shader.chorus_buf_r[inst.out_var]
-				mut c_idx := shader.chorus_idx[inst.out_var]
+				mut c_buf_l := shader.chorus_buf_l[id]
+				mut c_buf_r := shader.chorus_buf_r[id]
+				mut c_idx := shader.chorus_idx[id]
 
 				lfo := math.sin(2.0 * math.pi * rate * t)
 				delay_samples := 220.0 + lfo * (depth * 44.1)
@@ -602,29 +774,30 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				c_buf_r[c_idx] = val_r + delayed_r * fb
 				c_idx = (c_idx + 1) % buf_size
 
-				shader.chorus_buf_l[inst.out_var] = c_buf_l
-				shader.chorus_buf_r[inst.out_var] = c_buf_r
-				shader.chorus_idx[inst.out_var] = c_idx
+				shader.chorus_buf_l[id] = c_buf_l
+				shader.chorus_buf_r[id] = c_buf_r
+				shader.chorus_idx[id] = c_idx
 
-				shader.vars_l[inst.out_var] = val_l * (1.0 - mix) + delayed_l * mix
-				shader.vars_r[inst.out_var] = val_r * (1.0 - mix) + delayed_r * mix
+				shader.vars_l[id] = val_l * (1.0 - mix) + delayed_l * mix
+				shader.vars_r[id] = val_r * (1.0 - mix) + delayed_r * mix
 			}
 			'exciter' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				cutoff := inst.args[0].f64()
-				drive := inst.args[1].f64()
-				mix := inst.args[2].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				cutoff := inst.args[0].val
+				drive := inst.args[1].val
+				mix := inst.args[2].val
 
-				mut prev_l := shader.prev_filter_l[inst.out_var + '_exc']
-				mut prev_r := shader.prev_filter_r[inst.out_var + '_exc']
+				exc_idx := id + num_vars
+				mut prev_l := shader.prev_filter_l[exc_idx]
+				mut prev_r := shader.prev_filter_r[exc_idx]
 				alpha := 2.0 * math.pi * cutoff / sample_rate
 
 				prev_l = prev_l + alpha * (val_l - prev_l)
 				prev_r = prev_r + alpha * (val_r - prev_r)
 
-				shader.prev_filter_l[inst.out_var + '_exc'] = prev_l
-				shader.prev_filter_r[inst.out_var + '_exc'] = prev_r
+				shader.prev_filter_l[exc_idx] = prev_l
+				shader.prev_filter_r[exc_idx] = prev_r
 
 				hp_l := val_l - prev_l
 				hp_r := val_r - prev_r
@@ -632,13 +805,13 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				sat_l := math.tanh(hp_l * drive)
 				sat_r := math.tanh(hp_r * drive)
 
-				shader.vars_l[inst.out_var] = val_l + sat_l * mix
-				shader.vars_r[inst.out_var] = val_r + sat_r * mix
+				shader.vars_l[id] = val_l + sat_l * mix
+				shader.vars_r[id] = val_r + sat_r * mix
 			}
 			'wavefolder' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				gain := inst.args[0].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				gain := inst.args[0].val
 
 				mut out_l := val_l * gain
 				for out_l > 1.0 || out_l < -1.0 {
@@ -658,14 +831,14 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 					}
 				}
 
-				shader.vars_l[inst.out_var] = out_l
-				shader.vars_r[inst.out_var] = out_r
+				shader.vars_l[id] = out_l
+				shader.vars_r[id] = out_r
 			}
 			'vowel' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				vow_char := inst.args[0]
-				mix := inst.args[1].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				vow_char := inst.str_args[0]
+				mix := inst.args[0].val
 
 				mut f1 := 600.0
 				mut f2 := 1040.0
@@ -690,15 +863,15 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				d := 1.0 / q
 
 				for idx, freq in freqs {
-					id_str := idx.str()
+					offset_idx := id + num_vars * (1 + idx)
 					mut f := 2.0 * math.sin(math.pi * freq / sample_rate)
 					if f < 0.001 { f = 0.001 }
 					if f > 0.99 { f = 0.99 }
 
-					mut ic1_l := shader.svf_ic1_l[inst.out_var + '_vow' + id_str]
-					mut ic2_l := shader.svf_ic2_l[inst.out_var + '_vow' + id_str]
-					mut ic1_r := shader.svf_ic1_r[inst.out_var + '_vow' + id_str]
-					mut ic2_r := shader.svf_ic2_r[inst.out_var + '_vow' + id_str]
+					mut ic1_l := shader.svf_ic1_l[offset_idx]
+					mut ic2_l := shader.svf_ic2_l[offset_idx]
+					mut ic1_r := shader.svf_ic1_r[offset_idx]
+					mut ic2_r := shader.svf_ic2_r[offset_idx]
 
 					hp_l := val_l - ic2_l - d * ic1_l
 					bp_l := ic1_l + f * hp_l
@@ -708,14 +881,14 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 
 					hp_r := val_r - ic2_r - d * ic1_r
 					bp_r := ic1_r + f * hp_r
-					lp_r := ic2_r + f * hp_r
+					lp_r := ic2_r + f * bp_r
 					ic1_r = bp_r + f * hp_r
 					ic2_r = lp_r + f * bp_r
 
-					shader.svf_ic1_l[inst.out_var + '_vow' + id_str] = ic1_l
-					shader.svf_ic2_l[inst.out_var + '_vow' + id_str] = ic2_l
-					shader.svf_ic1_r[inst.out_var + '_vow' + id_str] = ic1_r
-					shader.svf_ic2_r[inst.out_var + '_vow' + id_str] = ic2_r
+					shader.svf_ic1_l[offset_idx] = ic1_l
+					shader.svf_ic2_l[offset_idx] = ic2_l
+					shader.svf_ic1_r[offset_idx] = ic1_r
+					shader.svf_ic2_r[offset_idx] = ic2_r
 
 					bp_sum_l += bp_l
 					bp_sum_r += bp_r
@@ -724,71 +897,77 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				out_l := val_l * (1.0 - mix) + (bp_sum_l * 2.5) * mix
 				out_r := val_r * (1.0 - mix) + (bp_sum_r * 2.5) * mix
 
-				shader.vars_l[inst.out_var] = out_l
-				shader.vars_r[inst.out_var] = out_r
+				shader.vars_l[id] = out_l
+				shader.vars_r[id] = out_r
 			}
 			'phaser' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				rate := inst.args[0].f64()
-				fb := inst.args[1].f64()
-				mix := inst.args[2].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				rate := inst.args[0].val
+				fb := inst.args[1].val
+				mix := inst.args[2].val
 
 				lfo := 0.5 + 0.5 * math.sin(2.0 * math.pi * rate * t)
 				cutoff := 150.0 + lfo * 1550.0
 				w0 := math.pi * cutoff / sample_rate
 				a1 := (1.0 - math.tan(w0 * 0.5)) / (1.0 + math.tan(w0 * 0.5))
 
-				fb_l := shader.prev_filter_l[inst.out_var + '_phfb_l']
-				fb_r := shader.prev_filter_r[inst.out_var + '_phfb_r']
+				fb_l_idx := id + num_vars * 1
+				fb_r_idx := id + num_vars * 2
+
+				fb_l := shader.prev_filter_l[fb_l_idx]
+				fb_r := shader.prev_filter_r[fb_r_idx]
 
 				mut ap_in_l := val_l + fb_l * fb
 				mut ap_in_r := val_r + fb_r * fb
 
 				for stage in 1 .. 5 {
-					st_str := stage.str()
+					apx_l_idx := id + num_vars * (2 + stage)
+					apy_l_idx := id + num_vars * (6 + stage)
+					apx_r_idx := id + num_vars * (10 + stage)
+					apy_r_idx := id + num_vars * (14 + stage)
 
-					xp_l := shader.prev_filter_l[inst.out_var + '_apx_l_' + st_str]
-					yp_l := shader.prev_filter_l[inst.out_var + '_apy_l_' + st_str]
-					xp_r := shader.prev_filter_r[inst.out_var + '_apx_r_' + st_str]
-					yp_r := shader.prev_filter_r[inst.out_var + '_apy_r_' + st_str]
+					xp_l := shader.prev_filter_l[apx_l_idx]
+					yp_l := shader.prev_filter_l[apy_l_idx]
+					xp_r := shader.prev_filter_r[apx_r_idx]
+					yp_r := shader.prev_filter_r[apy_r_idx]
 
 					out_l := a1 * ap_in_l + xp_l - a1 * yp_l
 					out_r := a1 * ap_in_r + xp_r - a1 * yp_r
 
-					shader.prev_filter_l[inst.out_var + '_apx_l_' + st_str] = ap_in_l
-					shader.prev_filter_l[inst.out_var + '_apy_l_' + st_str] = out_l
-					shader.prev_filter_r[inst.out_var + '_apx_r_' + st_str] = ap_in_r
-					shader.prev_filter_r[inst.out_var + '_apy_r_' + st_str] = out_r
+					shader.prev_filter_l[apx_l_idx] = ap_in_l
+					shader.prev_filter_l[apy_l_idx] = out_l
+					shader.prev_filter_r[apx_r_idx] = ap_in_r
+					shader.prev_filter_r[apy_r_idx] = out_r
 
 					ap_in_l = out_l
 					ap_in_r = out_r
 				}
 
-				shader.prev_filter_l[inst.out_var + '_phfb_l'] = ap_in_l
-				shader.prev_filter_r[inst.out_var + '_phfb_r'] = ap_in_r
+				shader.prev_filter_l[fb_l_idx] = ap_in_l
+				shader.prev_filter_r[fb_r_idx] = ap_in_r
 
-				shader.vars_l[inst.out_var] = val_l * (1.0 - mix) + ap_in_l * mix
-				shader.vars_r[inst.out_var] = val_r * (1.0 - mix) + ap_in_r * mix
+				shader.vars_l[id] = val_l * (1.0 - mix) + ap_in_l * mix
+				shader.vars_r[id] = val_r * (1.0 - mix) + ap_in_r * mix
 			}
 			'ms_width' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				width := inst.args[0].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				width := inst.args[0].val
 
 				mid := (val_l + val_r) * 0.5
 				side := (val_l - val_r) * 0.5 * width
 
-				shader.vars_l[inst.out_var] = mid + side
-				shader.vars_r[inst.out_var] = mid - side
+				shader.vars_l[id] = mid + side
+				shader.vars_r[id] = mid - side
 			}
 			'modulate' {
-				is_var_l := (inst.args[0][0] >= `a` && inst.args[0][0] <= `z`) || (inst.args[0][0] >= `A` && inst.args[0][0] <= `Z`)
-				in_val_l := if is_var_l { shader.vars_l[inst.args[0]] } else { inst.args[0].f64() }
-				in_val_r := if is_var_l { shader.vars_r[inst.args[0]] } else { inst.args[0].f64() }
-				mod_type := inst.args[1]
-				mod_freq := inst.args[2].f64()
-				depth := inst.args[3].f64()
+				arg0 := inst.args[0]
+				in_val_l := if arg0.is_var { shader.vars_l[arg0.var_id] } else { arg0.val }
+				in_val_r := if arg0.is_var { shader.vars_r[arg0.var_id] } else { arg0.val }
+				mod_type := inst.str_args[0]
+				mod_freq := inst.args[1].val
+				depth := inst.args[2].val
 
 				mut mod_sig := 1.0
 				if mod_type == 'tremolo' {
@@ -796,48 +975,48 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				} else if mod_type == 'ring' {
 					mod_sig = math.sin(2.0 * math.pi * mod_freq * t)
 				}
-				shader.vars_l[inst.out_var] = in_val_l * mod_sig
-				shader.vars_r[inst.out_var] = in_val_r * mod_sig
+				shader.vars_l[id] = in_val_l * mod_sig
+				shader.vars_r[id] = in_val_r * mod_sig
 			}
 			'bitcrush' {
-				val_l := shader.vars_l[inst.out_var]
-				val_r := shader.vars_r[inst.out_var]
-				bits := inst.args[0].f64()
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				bits := inst.args[0].val
 				steps := math.pow(2.0, bits)
-				shader.vars_l[inst.out_var] = math.floor(val_l * steps + 0.5) / steps
-				shader.vars_r[inst.out_var] = math.floor(val_r * steps + 0.5) / steps
+				shader.vars_l[id] = math.floor(val_l * steps + 0.5) / steps
+				shader.vars_r[id] = math.floor(val_r * steps + 0.5) / steps
 			}
 			'pan' {
-				pan_val := inst.args[0].f64()
+				pan_val := inst.args[0].val
 				angle := (pan_val + 1.0) * math.pi / 4.0
 				left_gain := math.cos(angle)
 				right_gain := math.sin(angle)
-				shader.vars_l[inst.out_var] = shader.vars_l[inst.out_var] * left_gain
-				shader.vars_r[inst.out_var] = shader.vars_r[inst.out_var] * right_gain
+				shader.vars_l[id] = shader.vars_l[id] * left_gain
+				shader.vars_r[id] = shader.vars_r[id] * right_gain
 			}
 			'autopan' {
-				freq_hz := inst.args[0].f64()
+				freq_hz := inst.args[0].val
 				pan_sweep := math.sin(2.0 * math.pi * freq_hz * t)
 				angle := (pan_sweep + 1.0) * math.pi / 4.0
 				left_gain := math.cos(angle)
 				right_gain := math.sin(angle)
-				shader.vars_l[inst.out_var] = shader.vars_l[inst.out_var] * left_gain
-				shader.vars_r[inst.out_var] = shader.vars_r[inst.out_var] * right_gain
+				shader.vars_l[id] = shader.vars_l[id] * left_gain
+				shader.vars_r[id] = shader.vars_r[id] * right_gain
 			}
 			else {}
 		}
-		if inst.out_var == 'x' || inst.out_var == 'y' {
-			shader.vars_l['x'] = shader.vars_l[inst.out_var]
-			shader.vars_r['x'] = shader.vars_r[inst.out_var]
+		if id == 0 || id == 1 {
+			shader.vars_l[0] = shader.vars_l[id]
+			shader.vars_r[0] = shader.vars_r[id]
 		}
 	}
-	return shader.vars_l['y'], shader.vars_r['y']
+	return shader.vars_l[1], shader.vars_r[1]
 }
 
-fn interpret_track(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, active_shaders map[string]AudioShader, track_effects []string, sample_rate u32) []f64 {
-	mut local_shaders := clone_shaders(active_shaders)
+fn interpret_track(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, active_shaders map[string]FastAudioShader, track_effects []string, sample_rate u32, max_samples_limit int) []f64 {
+	mut local_shaders := clone_fast_shaders(active_shaders)
 	dry_pcm := interpret_track_mut(commands, single_samples, multi_samples, custom_synths, mut
-		local_shaders, sample_rate)
+		local_shaders, sample_rate, max_samples_limit)
 
 	if track_effects.len == 0 {
 		return dry_pcm
@@ -851,7 +1030,7 @@ fn interpret_track(commands []Command, single_samples map[string]SingleSampleIns
 		mut right_val := dry_pcm[i + 1]
 		for fx_name in track_effects {
 			if fx_name in local_shaders {
-				left_val, right_val = apply_shader(mut local_shaders[fx_name], left_val,
+				left_val, right_val = apply_fast_shader(mut local_shaders[fx_name], left_val,
 					right_val, t)
 			}
 		}
@@ -862,7 +1041,7 @@ fn interpret_track(commands []Command, single_samples map[string]SingleSampleIns
 	return processed_pcm
 }
 
-fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]AudioShader, sample_rate u32) []f64 {
+fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]FastAudioShader, sample_rate u32, max_samples_limit int) []f64 {
 	mut track_pcm := []f64{}
 	mut loop_stack := []LoopState{}
 	mut ip := 0
@@ -1208,13 +1387,19 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 					mut right_val := sample_val
 					for fx_name in cmd.effects_chain {
 						if fx_name in active_shaders {
-							left_val, right_val = apply_shader(mut active_shaders[fx_name],
+							left_val, right_val = apply_fast_shader(mut active_shaders[fx_name],
 								left_val, right_val, t)
 						}
 					}
 					track_pcm << left_val
 					track_pcm << right_val
 				}
+				
+				if max_samples_limit > 0 && (track_pcm.len / 2) >= max_samples_limit {
+					track_pcm = track_pcm[0 .. max_samples_limit * 2].clone()
+					return track_pcm
+				}
+
 				ip++
 			}
 			else {
@@ -1685,6 +1870,18 @@ fn main() {
 	}
 
 	sample_rate := u32(44100)
+	
+	mut max_samples_limit := -1
+	if has_slice_first {
+		max_samples_limit = int(slice_first_secs * f64(sample_rate))
+	}
+	
+	println('[*] Compiling audio shaders for DSP rendering...')
+	mut fast_active_shaders := map[string]FastAudioShader{}
+	for name, sh in active_shaders {
+		fast_active_shaders[name] = compile_shader(sh)
+	}
+
 	mut master_dry_pcm := []f64{}
 	volume := 28000.0 * master_volume_factor
 
@@ -1735,7 +1932,7 @@ fn main() {
 						track_cmds := defined_tracks[name]
 						fx := track_effects[name] or { []string{} }
 						threads << go interpret_track(track_cmds, single_samples, multi_samples,
-							custom_synths, active_shaders, fx, sample_rate)
+							custom_synths, fast_active_shaders, fx, sample_rate, max_samples_limit)
 						track_vols << vol
 					} else {
 						println('[-] Error: Defined track "${name}" not found.')
@@ -1768,13 +1965,23 @@ fn main() {
 				for val in mixed_block {
 					master_dry_pcm << val
 				}
+
+				if max_samples_limit > 0 && (master_dry_pcm.len / 2) >= max_samples_limit {
+					master_dry_pcm = master_dry_pcm[0 .. max_samples_limit * 2].clone()
+					break
+				}
 				ip++
 			}
 			'note' {
 				res := interpret_track_mut([cmd], single_samples, multi_samples, custom_synths, mut
-					active_shaders, sample_rate)
+					fast_active_shaders, sample_rate, max_samples_limit)
 				for val in res {
 					master_dry_pcm << val
+				}
+
+				if max_samples_limit > 0 && (master_dry_pcm.len / 2) >= max_samples_limit {
+					master_dry_pcm = master_dry_pcm[0 .. max_samples_limit * 2].clone()
+					break
 				}
 				ip++
 			}
@@ -1793,8 +2000,8 @@ fn main() {
 			mut left_val := master_dry_pcm[k]
 			mut right_val := master_dry_pcm[k + 1]
 			for fx_name in master_effects {
-				if fx_name in active_shaders {
-					left_val, right_val = apply_shader(mut active_shaders[fx_name], left_val,
+				if fx_name in fast_active_shaders {
+					left_val, right_val = apply_fast_shader(mut fast_active_shaders[fx_name], left_val,
 						right_val, t)
 				}
 			}
