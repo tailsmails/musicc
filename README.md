@@ -36,7 +36,7 @@ Musicc is a lightweight, high-performance command-line music compiler, modular s
 
 ### 3. Resampling & Slicing Sampler (Multi-Sample Bank Engine)
 - **Robust Audio File Decoding**: Supports mono/stereo, 8, 16, 24, and 32-bit IEEE float uncompressed PCM WAV files.
-- **Linear Interpolation Resampling**: Shifts the playback pitch of samples using fractional index tracking combined with linear interpolation ($val_1 + frac \times (val_2 - val_1)$), preventing aliasing artifacts during high-ratio transposition.
+- **Linear Interpolation Resampling**: Shifts the playback pitch of samples using fractional index tracking combined with linear interpolation preventing aliasing artifacts during high-ratio transposition.
 - **Nearest-Semitone Multi-Sampling**: In multi-sampling mode, when a note is requested, the compiler searches the registered bank for the nearest defined semitone, calculates the distance, and automatically pitch-shifts the sample.
 - **Millisecond-Precision Slicing**: Allows real-time sample cropping using the syntax `<start_ms>-<end_ms>`. Slicing is performed on the fly with zero memory copies by shifting the pointer's base offset.
 - **One-Shot Auto-Duration**: Specifying a duration of `0` tells the engine to automatically calculate the sample's full duration (adjusted for its pitch ratio) and play it to the end without truncation.
