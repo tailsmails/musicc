@@ -151,33 +151,47 @@ mut:
 	current_iter int
 }
 
-fn note_to_freq(note string) f64 {
-	if note == 'REST' || note == 'P' {
+fn note_to_freq(note string, base_pitch f64) f64 {
+	if note == 'REST' || note == 'P' || note == 'rest' || note == 'p' {
 		return 0.0
 	}
-	if note.len < 2 {
+	if note.len == 0 {
 		return 0.0
 	}
-
+	
+	mut is_num := true
+	for c in note {
+		if c < `0` || c > `9` {
+			is_num = false
+			break
+		}
+	}
+	if is_num {
+		midi_val := note.int()
+		semitones := midi_val - 69
+		return base_pitch * math.pow(2.0, f64(semitones) / 12.0)
+	}
+	
+	upper_note := note.to_upper()
 	note_names := ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-	mut name := note[0..1]
-	mut octave_str := note[1..]
+	mut name := upper_note[0..1]
+	mut octave_str := upper_note[1..]
 
-	if note.len > 2 && (note[1] == `#` || note[1] == `b`) {
-		name = note[0..2]
-		octave_str = note[2..]
+	if upper_note.len > 2 && (upper_note[1] == `#` || upper_note[1] == `B`) {
+		name = upper_note[0..2]
+		octave_str = upper_note[2..]
 	}
 
-	if name == 'Db' {
+	if name == 'DB' {
 		name = 'C#'
-	} else if name == 'Eb' {
+	} else if name == 'EB' {
 		name = 'D#'
-	} else if name == 'Gb' {
+	} else if name == 'GB' {
 		name = 'F#'
-	} else if name == 'Ab' {
+	} else if name == 'AB' {
 		name = 'G#'
-	} else if name == 'Bb' {
+	} else if name == 'BB' {
 		name = 'A#'
 	}
 
@@ -187,33 +201,48 @@ fn note_to_freq(note string) f64 {
 	}
 
 	octave := octave_str.int()
-
 	semitones := (octave - 4) * 12 + (note_idx - 9)
-	return 440.0 * math.pow(2.0, f64(semitones) / 12.0)
+	return base_pitch * math.pow(2.0, f64(semitones) / 12.0)
 }
 
 fn note_to_semitone(note string) int {
-	if note.len < 2 {
+	if note.len == 0 {
 		return 0
 	}
-	note_names := ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-	mut name := note[0..1]
-	mut octave_str := note[1..]
-	if note.len > 2 && (note[1] == `#` || note[1] == `b`) {
-		name = note[0..2]
-		octave_str = note[2..]
+	
+	mut is_num := true
+	for c in note {
+		if c < `0` || c > `9` {
+			is_num = false
+			break
+		}
 	}
-	if name == 'Db' {
+	if is_num {
+		return note.int() - 69
+	}
+
+	upper_note := note.to_upper()
+	note_names := ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+	mut name := upper_note[0..1]
+	mut octave_str := upper_note[1..]
+
+	if upper_note.len > 2 && (upper_note[1] == `#` || upper_note[1] == `B`) {
+		name = upper_note[0..2]
+		octave_str = upper_note[2..]
+	}
+
+	if name == 'DB' {
 		name = 'C#'
-	} else if name == 'Eb' {
+	} else if name == 'EB' {
 		name = 'D#'
-	} else if name == 'Gb' {
+	} else if name == 'GB' {
 		name = 'F#'
-	} else if name == 'Ab' {
+	} else if name == 'AB' {
 		name = 'G#'
-	} else if name == 'Bb' {
+	} else if name == 'BB' {
 		name = 'A#'
 	}
+
 	note_idx := note_names.index(name)
 	if note_idx == -1 {
 		return 0
@@ -750,14 +779,14 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 				hp_l := val_l - ic2_l - d * ic1_l
 				bp_l := ic1_l + f * hp_l
 				lp_l := ic2_l + f * bp_l
-				ic1_l = bp_l // FIXED BUG: Resolved SVF signal explosion
-				ic2_l = lp_l // FIXED BUG: Resolved SVF signal explosion
+				ic1_l = bp_l
+				ic2_l = lp_l
 
 				hp_r := val_r - ic2_r - d * ic1_r
 				bp_r := ic1_r + f * hp_r
 				lp_r := ic2_r + f * bp_r
-				ic1_r = bp_r // FIXED BUG: Resolved SVF signal explosion
-				ic2_r = lp_r // FIXED BUG: Resolved SVF signal explosion
+				ic1_r = bp_r
+				ic2_r = lp_r
 
 				shader.svf_ic1_l[id] = ic1_l
 				shader.svf_ic2_l[id] = ic2_l
@@ -994,14 +1023,14 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 					hp_l := val_l - ic2_l - d * ic1_l
 					bp_l := ic1_l + f * hp_l
 					lp_l := ic2_l + f * bp_l
-					ic1_l = bp_l // FIXED BUG: Resolved SVF vowel explosion
-					ic2_l = lp_l // FIXED BUG: Resolved SVF vowel explosion
+					ic1_l = bp_l
+					ic2_l = lp_l
 
 					hp_r := val_r - ic2_r - d * ic1_r
 					bp_r := ic1_r + f * hp_r
 					lp_r := ic2_r + f * bp_r
-					ic1_r = bp_r // FIXED BUG: Resolved SVF vowel explosion
-					ic2_r = lp_r // FIXED BUG: Resolved SVF vowel explosion
+					ic1_r = bp_r
+					ic2_r = lp_r
 
 					shader.svf_ic1_l[offset_idx] = ic1_l
 					shader.svf_ic2_l[offset_idx] = ic2_l
@@ -1131,10 +1160,10 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 	return shader.vars_l[1], shader.vars_r[1]
 }
 
-fn interpret_track(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, active_shaders map[string]FastAudioShader, track_effects []string, sample_rate u32, max_samples_limit int) []f64 {
+fn interpret_track(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, active_shaders map[string]FastAudioShader, track_effects []string, sample_rate u32, max_samples_limit int, base_pitch f64) []f64 {
 	mut local_shaders := clone_fast_shaders(active_shaders)
 	dry_pcm := interpret_track_mut(commands, single_samples, multi_samples, custom_synths, mut
-		local_shaders, sample_rate, max_samples_limit)
+		local_shaders, sample_rate, max_samples_limit, base_pitch)
 
 	if track_effects.len == 0 {
 		return dry_pcm
@@ -1164,7 +1193,7 @@ fn interpret_track(commands []Command, single_samples map[string]SingleSampleIns
 	return processed_pcm
 }
 
-fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]FastAudioShader, sample_rate u32, max_samples_limit int) []f64 {
+fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]FastAudioShader, sample_rate u32, max_samples_limit int, base_pitch f64) []f64 {
 	mut track_pcm := []f64{cap: 1000000}
 	mut loop_stack := []LoopState{}
 	mut ip := 0
@@ -1196,7 +1225,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 				}
 			}
 			'note' {
-				freq := note_to_freq(cmd.note)
+				freq := note_to_freq(cmd.note, base_pitch)
 				duration_sec := f64(cmd.duration_ms) / 1000.0
 				num_samples := int(f64(sample_rate) * duration_sec)
 
@@ -1204,7 +1233,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 
 				if cmd.wave_type in single_samples {
 					inst := single_samples[cmd.wave_type]
-					base_freq := note_to_freq(inst.base_note)
+					base_freq := note_to_freq(inst.base_note, base_pitch)
 					ratio := if base_freq > 0.0 { freq / base_freq } else { 1.0 }
 
 					start_sec := f64(cmd.start_ms) / 1000.0
@@ -1272,7 +1301,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 						}
 
 						best_sample := inst.samples[best_note]
-						base_freq := note_to_freq(best_note)
+						base_freq := note_to_freq(best_note, base_pitch)
 						ratio := if base_freq > 0.0 { freq / base_freq } else { 1.0 }
 
 						start_sec := f64(cmd.start_ms) / 1000.0
@@ -1625,11 +1654,13 @@ fn main() {
 	mut master_effects := []string{}
 	mut render_ranges := []RenderRange{}
 	mut master_volume_factor := 1.0
+	mut base_pitch := 440.0
 	mut commands := []Command{}
 
 	mut current_define_name := ''
 	mut define_depth := 0
 	mut define_commands := []Command{}
+	mut define_start_line := 0
 
 	mut current_fx_name := ''
 	mut fx_instructions := []ShaderInstruction{}
@@ -1647,6 +1678,13 @@ fn main() {
 		if first_token == 'DEBUG_MODE' {
 			if parts.len > 1 && parts[1].to_upper() == 'ON' {
 				debug_enabled = true
+			}
+			continue
+		}
+
+		if first_token == 'BASE_PITCH' {
+			if parts.len > 1 {
+				base_pitch = parts[1].f64()
 			}
 			continue
 		}
@@ -1816,6 +1854,7 @@ fn main() {
 			current_define_name = sub_parts[0]
 			define_depth = 1
 			define_commands = []Command{}
+			define_start_line = i + 1
 			if sub_parts.len > 1 {
 				track_effects[current_define_name] = sub_parts[1..].clone()
 			} else {
@@ -2027,7 +2066,7 @@ fn main() {
 	}
 
 	if current_define_name != '' {
-		println('[!] Compilation Error: DEFINE block "${current_define_name}" was never closed.')
+		println('[!] Compilation Error: DEFINE block "${current_define_name}" (opened at line ${define_start_line}) was never closed. Did you forget an "END"?')
 		return
 	}
 
@@ -2038,6 +2077,7 @@ fn main() {
 		max_samples_limit = int(slice_first_secs * f64(sample_rate))
 	}
 
+	println('[*] Reference Base Pitch: ${base_pitch} Hz')
 	println('[*] Compiling audio shaders for DSP rendering...')
 	mut fast_active_shaders := map[string]FastAudioShader{}
 	for name, sh in active_shaders {
@@ -2094,7 +2134,7 @@ fn main() {
 						fx := track_effects[name] or { []string{} }
 						threads << spawn interpret_track(track_cmds, single_samples,
 							multi_samples, custom_synths, fast_active_shaders, fx,
-							sample_rate, max_samples_limit)
+							sample_rate, max_samples_limit, base_pitch)
 						track_vols << vol
 					} else {
 						println('[-] Error: Defined track "${name}" not found.')
@@ -2136,7 +2176,7 @@ fn main() {
 			}
 			'note' {
 				res := interpret_track_mut([cmd], single_samples, multi_samples, custom_synths, mut
-					fast_active_shaders, sample_rate, max_samples_limit)
+					fast_active_shaders, sample_rate, max_samples_limit, base_pitch)
 				for val in res {
 					master_dry_pcm << val
 				}
@@ -2255,6 +2295,7 @@ fn main() {
 
 	mut outfile := os.create(output_path) or {
 		println('[!] Error: Could not create output file: ${err}')
+		println('    Please check if the output directory exists and is writable.')
 		return
 	}
 	defer { outfile.close() }
