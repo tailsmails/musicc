@@ -1,0 +1,54 @@
+MASTER_EFFECT final_space
+DEFINE_SYNTH dark_drone sawtooth 5 0.05 0 0.04
+DEFINE_SYNTH sub_pulse square 3 0.12 0 0.08
+DEFINE_SYNTH celestial_bells sine 3 0.05 3.01 0.2
+
+DEFINE_EFFECT heavy_echo
+    DELAY d1 19845 0.50
+    DELAY d2 30870 0.40
+    MIX y x 0.5 d1 0.3 d2 0.2
+    FILTER y lowpass 0.12
+    SATURATE y tanh
+END
+
+DEFINE_EFFECT final_space
+    DELAY r1 8820 0.45
+    DELAY r2 17640 0.35
+    MIX y x 0.6 r1 0.25 r2 0.15
+    FILTER y lowpass 0.20
+    SATURATE y soft
+END
+
+DEFINE background_pad|heavy_echo
+    LOOP 2
+        C3 4000 dark_drone
+        F3 4000 dark_drone
+        Ab3 4000 dark_drone
+        G3 4000 dark_drone
+    END
+END
+
+DEFINE chime_melody|heavy_echo
+    LOOP 2
+        REST 1500
+        G5 2500 celestial_bells
+        C6 2500 celestial_bells
+        REST 1500
+        Bb5 2500 celestial_bells
+        REST 1500
+        F5 2500 celestial_bells
+    END
+END
+
+DEFINE mid_harmony|heavy_echo
+    LOOP 2
+        C4 3000 sub_pulse
+        REST 1000
+        Eb4 3000 sub_pulse
+        REST 1000
+        G4 3000 sub_pulse
+        REST 1000
+    END
+END
+
+PLAY_CONCURRENT background_pad chime_melody mid_harmony
