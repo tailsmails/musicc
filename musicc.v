@@ -55,6 +55,19 @@ mut:
 	prev_filter_r    map[string]f64
 	vars_l           map[string]f64
 	vars_r           map[string]f64
+	comp_env_l       map[string]f64
+	comp_env_r       map[string]f64
+	svf_ic1_l        map[string]f64
+	svf_ic2_l        map[string]f64
+	svf_ic1_r        map[string]f64
+	svf_ic2_r        map[string]f64
+	reverb_buf_l     map[string][][]f64
+	reverb_buf_r     map[string][][]f64
+	reverb_idx_l     map[string][]int
+	reverb_idx_r     map[string][]int
+	chorus_buf_l     map[string][]f64
+	chorus_buf_r     map[string][]f64
+	chorus_idx       map[string]int
 }
 
 struct RenderRange {
@@ -189,7 +202,7 @@ fn load_wav(path string) WavSample {
 		return WavSample{ success: false }
 	}
 	if data[0] != `R` || data[1] != `I` || data[2] != `F` || data[3] != `F` {
-		println('[!] Error: File ${path} is not a valid RIFF/WAV. (Make sure you did not just rename an .mp3/.m4a to .wav)')
+		println('[!] Error: File ${path} is not a valid RIFF/WAV.')
 		return WavSample{ success: false }
 	}
 	if data[8] != `W` || data[9] != `A` || data[10] != `V` || data[11] != `E` {
@@ -254,7 +267,7 @@ fn load_wav(path string) WavSample {
 			i += int(channels)
 		}
 	} else {
-		println('[!] Error: Unsupported WAV format in ${path} (Format: ${audio_format}, Bits: ${bits_per_sample})')
+		println('[!] Error: Unsupported WAV format in ${path}')
 		return WavSample{ success: false }
 	}
 
@@ -293,6 +306,19 @@ fn clone_shaders(shaders map[string]AudioShader) map[string]AudioShader {
 			prev_filter_r: cloned_filters_r
 			vars_l: sh.vars_l.clone()
 			vars_r: sh.vars_r.clone()
+			comp_env_l: sh.comp_env_l.clone()
+			comp_env_r: sh.comp_env_r.clone()
+			svf_ic1_l: sh.svf_ic1_l.clone()
+			svf_ic2_l: sh.svf_ic2_l.clone()
+			svf_ic1_r: sh.svf_ic1_r.clone()
+			svf_ic2_r: sh.svf_ic2_r.clone()
+			reverb_buf_l: sh.reverb_buf_l.clone()
+			reverb_buf_r: sh.reverb_buf_r.clone()
+			reverb_idx_l: sh.reverb_idx_l.clone()
+			reverb_idx_r: sh.reverb_idx_r.clone()
+			chorus_buf_l: sh.chorus_buf_l.clone()
+			chorus_buf_r: sh.chorus_buf_r.clone()
+			chorus_idx: sh.chorus_idx.clone()
 		}
 	}
 	return cloned
@@ -303,6 +329,8 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 	shader.vars_r['x'] = input_r
 	shader.vars_l['y'] = input_l
 	shader.vars_r['y'] = input_r
+
+	sample_rate := 44100.0
 
 	for inst in shader.instructions {
 		match inst.op {
@@ -387,6 +415,372 @@ fn apply_shader(mut shader AudioShader, input_l f64, input_r f64, t f64) (f64, f
 				}
 				shader.prev_filter_l[inst.out_var] = prev_l
 				shader.prev_filter_r[inst.out_var] = prev_r
+			}
+			'compressor' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				threshold_db := inst.args[0].f64()
+				ratio := inst.args[1].f64()
+				attack_ms := inst.args[2].f64()
+				release_ms := inst.args[3].f64()
+				makeup_db := inst.args[4].f64()
+
+				t_att := math.exp(-1.0 / (sample_rate * (attack_ms / 1000.0)))
+				t_rel := math.exp(-1.0 / (sample_rate * (release_ms / 1000.0)))
+
+				mut env_l := shader.comp_env_l[inst.out_var]
+				mut env_r := shader.comp_env_r[inst.out_var]
+
+				abs_l := math.abs(val_l)
+				abs_r := math.abs(val_r)
+
+				env_l = if abs_l > env_l { t_att * env_l + (1.0 - t_att) * abs_l } else { t_rel * env_l + (1.0 - t_rel) * abs_l }
+				env_r = if abs_r > env_r { t_att * env_r + (1.0 - t_att) * abs_r } else { t_rel * env_r + (1.0 - t_rel) * abs_r }
+
+				shader.comp_env_l[inst.out_var] = env_l
+				shader.comp_env_r[inst.out_var] = env_r
+
+				env_db_l := 20.0 * math.log10(env_l + 1e-6)
+				env_db_r := 20.0 * math.log10(env_r + 1e-6)
+
+				mut gain_db_l := 0.0
+				mut gain_db_r := 0.0
+
+				if env_db_l > threshold_db {
+					gain_db_l = (threshold_db - env_db_l) * (1.0 - 1.0 / ratio)
+				}
+				if env_db_r > threshold_db {
+					gain_db_r = (threshold_db - env_db_r) * (1.0 - 1.0 / ratio)
+				}
+
+				total_gain_l := math.pow(10.0, (gain_db_l + makeup_db) / 20.0)
+				total_gain_r := math.pow(10.0, (gain_db_r + makeup_db) / 20.0)
+
+				shader.vars_l[inst.out_var] = val_l * total_gain_l
+				shader.vars_r[inst.out_var] = val_r * total_gain_r
+			}
+			'svf' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				f_type := inst.args[0]
+				cutoff := inst.args[1].f64()
+				q := inst.args[2].f64()
+
+				mut f := 2.0 * math.sin(math.pi * cutoff / sample_rate)
+				if f < 0.001 { f = 0.001 }
+				if f > 0.99 { f = 0.99 }
+				d := 1.0 / q
+
+				mut ic1_l := shader.svf_ic1_l[inst.out_var]
+				mut ic2_l := shader.svf_ic2_l[inst.out_var]
+				mut ic1_r := shader.svf_ic1_r[inst.out_var]
+				mut ic2_r := shader.svf_ic2_r[inst.out_var]
+
+				hp_l := val_l - ic2_l - d * ic1_l
+				bp_l := ic1_l + f * hp_l
+				lp_l := ic2_l + f * bp_l
+				ic1_l = bp_l + f * hp_l
+				ic2_l = lp_l + f * bp_l
+
+				hp_r := val_r - ic2_r - d * ic1_r
+				bp_r := ic1_r + f * hp_r
+				lp_r := ic2_r + f * bp_r
+				ic1_r = bp_r + f * hp_r
+				ic2_r = lp_r + f * bp_r
+
+				shader.svf_ic1_l[inst.out_var] = ic1_l
+				shader.svf_ic2_l[inst.out_var] = ic2_l
+				shader.svf_ic1_r[inst.out_var] = ic1_r
+				shader.svf_ic2_r[inst.out_var] = ic2_r
+
+				mut out_l := val_l
+				mut out_r := val_r
+
+				match f_type {
+					'lowpass'  { out_l, out_r = lp_l, lp_r }
+					'highpass' { out_l, out_r = hp_l, hp_r }
+					'bandpass' { out_l, out_r = bp_l, bp_r }
+					'notch'    { out_l, out_r = hp_l + lp_l, hp_r + lp_r }
+					else {}
+				}
+
+				shader.vars_l[inst.out_var] = out_l
+				shader.vars_r[inst.out_var] = out_r
+			}
+			'reverb' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				size := inst.args[0].f64()
+				damp := inst.args[1].f64()
+				wet := inst.args[2].f64()
+				dry := inst.args[3].f64()
+
+				comb_lens_l := [1116, 1188, 1277, 1356]
+				comb_lens_r := [1213, 1134, 1301, 1267]
+
+				if inst.out_var !in shader.reverb_buf_l {
+					mut bl := [][]f64{}
+					mut br := [][]f64{}
+					for sz in comb_lens_l { bl << []f64{len: sz, init: 0.0} }
+					for sz in comb_lens_r { br << []f64{len: sz, init: 0.0} }
+					shader.reverb_buf_l[inst.out_var] = bl
+					shader.reverb_buf_r[inst.out_var] = br
+					shader.reverb_idx_l[inst.out_var] = [0, 0, 0, 0]
+					shader.reverb_idx_r[inst.out_var] = [0, 0, 0, 0]
+				}
+
+				mut bufs_l := shader.reverb_buf_l[inst.out_var]
+				mut bufs_r := shader.reverb_buf_r[inst.out_var]
+				mut idxs_l := shader.reverb_idx_l[inst.out_var]
+				mut idxs_r := shader.reverb_idx_r[inst.out_var]
+
+				feedback := 0.7 * size
+				mut comb_sum_l := 0.0
+				mut comb_sum_r := 0.0
+
+				for k in 0 .. 4 {
+					out_comb_l := bufs_l[k][idxs_l[k]]
+					out_comb_r := bufs_r[k][idxs_r[k]]
+
+					comb_sum_l += out_comb_l
+					comb_sum_r += out_comb_r
+
+					bufs_l[k][idxs_l[k]] = val_l + out_comb_l * feedback * (1.0 - damp)
+					bufs_r[k][idxs_r[k]] = val_r + out_comb_r * feedback * (1.0 - damp)
+
+					idxs_l[k] = (idxs_l[k] + 1) % comb_lens_l[k]
+					idxs_r[k] = (idxs_r[k] + 1) % comb_lens_r[k]
+				}
+
+				shader.reverb_buf_l[inst.out_var] = bufs_l
+				shader.reverb_buf_r[inst.out_var] = bufs_r
+				shader.reverb_idx_l[inst.out_var] = idxs_l
+				shader.reverb_idx_r[inst.out_var] = idxs_r
+
+				mixed_l := val_l * dry + (comb_sum_l * 0.25) * wet
+				mixed_r := val_r * dry + (comb_sum_r * 0.25) * wet
+
+				shader.vars_l[inst.out_var] = mixed_l
+				shader.vars_r[inst.out_var] = mixed_r
+			}
+			'chorus' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				rate := inst.args[0].f64()
+				depth := inst.args[1].f64()
+				fb := inst.args[2].f64()
+				mix := inst.args[3].f64()
+
+				buf_size := 4410
+
+				if inst.out_var !in shader.chorus_buf_l {
+					shader.chorus_buf_l[inst.out_var] = []f64{len: buf_size, init: 0.0}
+					shader.chorus_buf_r[inst.out_var] = []f64{len: buf_size, init: 0.0}
+					shader.chorus_idx[inst.out_var] = 0
+				}
+
+				mut c_buf_l := shader.chorus_buf_l[inst.out_var]
+				mut c_buf_r := shader.chorus_buf_r[inst.out_var]
+				mut c_idx := shader.chorus_idx[inst.out_var]
+
+				lfo := math.sin(2.0 * math.pi * rate * t)
+				delay_samples := 220.0 + lfo * (depth * 44.1)
+
+				mut read_ptr := math.fmod(f64(c_idx) - delay_samples + f64(buf_size), f64(buf_size))
+				if read_ptr < 0.0 {
+					read_ptr += f64(buf_size)
+				}
+
+				idx_floor := int(math.floor(read_ptr))
+				idx_ceil := (idx_floor + 1) % buf_size
+				frac := read_ptr - f64(idx_floor)
+
+				delayed_l := c_buf_l[idx_floor] * (1.0 - frac) + c_buf_l[idx_ceil] * frac
+				delayed_r := c_buf_r[idx_floor] * (1.0 - frac) + c_buf_r[idx_ceil] * frac
+
+				c_buf_l[c_idx] = val_l + delayed_l * fb
+				c_buf_r[c_idx] = val_r + delayed_r * fb
+				c_idx = (c_idx + 1) % buf_size
+
+				shader.chorus_buf_l[inst.out_var] = c_buf_l
+				shader.chorus_buf_r[inst.out_var] = c_buf_r
+				shader.chorus_idx[inst.out_var] = c_idx
+
+				shader.vars_l[inst.out_var] = val_l * (1.0 - mix) + delayed_l * mix
+				shader.vars_r[inst.out_var] = val_r * (1.0 - mix) + delayed_r * mix
+			}
+			'exciter' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				cutoff := inst.args[0].f64()
+				drive := inst.args[1].f64()
+				mix := inst.args[2].f64()
+
+				mut prev_l := shader.prev_filter_l[inst.out_var + '_exc']
+				mut prev_r := shader.prev_filter_r[inst.out_var + '_exc']
+				alpha := 2.0 * math.pi * cutoff / sample_rate
+
+				prev_l = prev_l + alpha * (val_l - prev_l)
+				prev_r = prev_r + alpha * (val_r - prev_r)
+
+				shader.prev_filter_l[inst.out_var + '_exc'] = prev_l
+				shader.prev_filter_r[inst.out_var + '_exc'] = prev_r
+
+				hp_l := val_l - prev_l
+				hp_r := val_r - prev_r
+
+				sat_l := math.tanh(hp_l * drive)
+				sat_r := math.tanh(hp_r * drive)
+
+				shader.vars_l[inst.out_var] = val_l + sat_l * mix
+				shader.vars_r[inst.out_var] = val_r + sat_r * mix
+			}
+			'wavefolder' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				gain := inst.args[0].f64()
+
+				mut out_l := val_l * gain
+				for out_l > 1.0 || out_l < -1.0 {
+					if out_l > 1.0 {
+						out_l = 2.0 - out_l
+					} else if out_l < -1.0 {
+						out_l = -2.0 - out_l
+					}
+				}
+
+				mut out_r := val_r * gain
+				for out_r > 1.0 || out_r < -1.0 {
+					if out_r > 1.0 {
+						out_r = 2.0 - out_r
+					} else if out_r < -1.0 {
+						out_r = -2.0 - out_r
+					}
+				}
+
+				shader.vars_l[inst.out_var] = out_l
+				shader.vars_r[inst.out_var] = out_r
+			}
+			'vowel' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				vow_char := inst.args[0]
+				mix := inst.args[1].f64()
+
+				mut f1 := 600.0
+				mut f2 := 1040.0
+				mut f3 := 2250.0
+
+				if vow_char == 'a' {
+					f1, f2, f3 = 730.0, 1090.0, 2440.0
+				} else if vow_char == 'e' {
+					f1, f2, f3 = 530.0, 1840.0, 2480.0
+				} else if vow_char == 'i' {
+					f1, f2, f3 = 270.0, 2290.0, 3010.0
+				} else if vow_char == 'o' {
+					f1, f2, f3 = 570.0, 840.0, 2410.0
+				} else if vow_char == 'u' {
+					f1, f2, f3 = 300.0, 870.0, 2240.0
+				}
+
+				mut bp_sum_l := 0.0
+				mut bp_sum_r := 0.0
+				freqs := [f1, f2, f3]
+				q := 12.0
+				d := 1.0 / q
+
+				for idx, freq in freqs {
+					id_str := idx.str()
+					mut f := 2.0 * math.sin(math.pi * freq / sample_rate)
+					if f < 0.001 { f = 0.001 }
+					if f > 0.99 { f = 0.99 }
+
+					mut ic1_l := shader.svf_ic1_l[inst.out_var + '_vow' + id_str]
+					mut ic2_l := shader.svf_ic2_l[inst.out_var + '_vow' + id_str]
+					mut ic1_r := shader.svf_ic1_r[inst.out_var + '_vow' + id_str]
+					mut ic2_r := shader.svf_ic2_r[inst.out_var + '_vow' + id_str]
+
+					hp_l := val_l - ic2_l - d * ic1_l
+					bp_l := ic1_l + f * hp_l
+					lp_l := ic2_l + f * bp_l
+					ic1_l = bp_l + f * hp_l
+					ic2_l = lp_l + f * bp_l
+
+					hp_r := val_r - ic2_r - d * ic1_r
+					bp_r := ic1_r + f * hp_r
+					lp_r := ic2_r + f * hp_r
+					ic1_r = bp_r + f * hp_r
+					ic2_r = lp_r + f * bp_r
+
+					shader.svf_ic1_l[inst.out_var + '_vow' + id_str] = ic1_l
+					shader.svf_ic2_l[inst.out_var + '_vow' + id_str] = ic2_l
+					shader.svf_ic1_r[inst.out_var + '_vow' + id_str] = ic1_r
+					shader.svf_ic2_r[inst.out_var + '_vow' + id_str] = ic2_r
+
+					bp_sum_l += bp_l
+					bp_sum_r += bp_r
+				}
+
+				out_l := val_l * (1.0 - mix) + (bp_sum_l * 2.5) * mix
+				out_r := val_r * (1.0 - mix) + (bp_sum_r * 2.5) * mix
+
+				shader.vars_l[inst.out_var] = out_l
+				shader.vars_r[inst.out_var] = out_r
+			}
+			'phaser' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				rate := inst.args[0].f64()
+				fb := inst.args[1].f64()
+				mix := inst.args[2].f64()
+
+				lfo := 0.5 + 0.5 * math.sin(2.0 * math.pi * rate * t)
+				cutoff := 150.0 + lfo * 1550.0
+				w0 := math.pi * cutoff / sample_rate
+				a1 := (1.0 - math.tan(w0 * 0.5)) / (1.0 + math.tan(w0 * 0.5))
+
+				fb_l := shader.prev_filter_l[inst.out_var + '_phfb_l']
+				fb_r := shader.prev_filter_r[inst.out_var + '_phfb_r']
+
+				mut ap_in_l := val_l + fb_l * fb
+				mut ap_in_r := val_r + fb_r * fb
+
+				for stage in 1 .. 5 {
+					st_str := stage.str()
+
+					xp_l := shader.prev_filter_l[inst.out_var + '_apx_l_' + st_str]
+					yp_l := shader.prev_filter_l[inst.out_var + '_apy_l_' + st_str]
+					xp_r := shader.prev_filter_r[inst.out_var + '_apx_r_' + st_str]
+					yp_r := shader.prev_filter_r[inst.out_var + '_apy_r_' + st_str]
+
+					out_l := a1 * ap_in_l + xp_l - a1 * yp_l
+					out_r := a1 * ap_in_r + xp_r - a1 * yp_r
+
+					shader.prev_filter_l[inst.out_var + '_apx_l_' + st_str] = ap_in_l
+					shader.prev_filter_l[inst.out_var + '_apy_l_' + st_str] = out_l
+					shader.prev_filter_r[inst.out_var + '_apx_r_' + st_str] = ap_in_r
+					shader.prev_filter_r[inst.out_var + '_apy_r_' + st_str] = out_r
+
+					ap_in_l = out_l
+					ap_in_r = out_r
+				}
+
+				shader.prev_filter_l[inst.out_var + '_phfb_l'] = ap_in_l
+				shader.prev_filter_r[inst.out_var + '_phfb_r'] = ap_in_r
+
+				shader.vars_l[inst.out_var] = val_l * (1.0 - mix) + ap_in_l * mix
+				shader.vars_r[inst.out_var] = val_r * (1.0 - mix) + ap_in_r * mix
+			}
+			'ms_width' {
+				val_l := shader.vars_l[inst.out_var]
+				val_r := shader.vars_r[inst.out_var]
+				width := inst.args[0].f64()
+
+				mid := (val_l + val_r) * 0.5
+				side := (val_l - val_r) * 0.5 * width
+
+				shader.vars_l[inst.out_var] = mid + side
+				shader.vars_r[inst.out_var] = mid - side
 			}
 			'modulate' {
 				is_var_l := (inst.args[0][0] >= `a` && inst.args[0][0] <= `z`) || (inst.args[0][0] >= `A` && inst.args[0][0] <= `Z`)
@@ -856,6 +1250,26 @@ fn main() {
 		}
 	}
 
+	mut slice_first_secs := 0.0
+	mut slice_last_secs := 0.0
+	mut has_slice_first := false
+	mut has_slice_last := false
+
+	for idx := 0; idx < os.args.len; idx++ {
+		arg := os.args[idx]
+		if arg == '--first' || arg == '-f' {
+			if idx + 1 < os.args.len {
+				slice_first_secs = os.args[idx + 1].f64()
+				has_slice_first = true
+			}
+		} else if arg == '--last' || arg == '-l' {
+			if idx + 1 < os.args.len {
+				slice_last_secs = os.args[idx + 1].f64()
+				has_slice_last = true
+			}
+		}
+	}
+
 	mut single_samples := map[string]SingleSampleInstrument{}
 	mut multi_samples := map[string]MultiSampleInstrument{}
 	mut custom_synths := map[string]CustomSynth{}
@@ -954,6 +1368,19 @@ fn main() {
 					prev_filter_r: map[string]f64{}
 					vars_l: vars_map.clone()
 					vars_r: vars_map.clone()
+					comp_env_l: map[string]f64{}
+					comp_env_r: map[string]f64{}
+					svf_ic1_l: map[string]f64{}
+					svf_ic2_l: map[string]f64{}
+					svf_ic1_r: map[string]f64{}
+					svf_ic2_r: map[string]f64{}
+					reverb_buf_l: map[string][][]f64{}
+					reverb_buf_r: map[string][][]f64{}
+					reverb_idx_l: map[string][]int{}
+					reverb_idx_r: map[string][]int{}
+					chorus_buf_l: map[string][]f64{}
+					chorus_buf_r: map[string][]f64{}
+					chorus_idx: map[string]int{}
 				}
 				if debug_enabled {
 					println('[Debug] Loaded Audio Shader effect: ${current_fx_name}')
@@ -1027,7 +1454,7 @@ fn main() {
 				release_ms: release_ms
 			}
 			if debug_enabled {
-				println('[Debug] Registered synthesizer: ${name} (OSC: ${osc_type}, ADSR: ${attack_ms}/${decay_ms}/${sustain_level}/${release_ms})')
+				println('[Debug] Registered synthesizer: ${name}')
 			}
 			continue
 		}
@@ -1061,7 +1488,7 @@ fn main() {
 				if define_depth == 0 {
 					defined_tracks[current_define_name] = define_commands
 					if debug_enabled {
-						println('[Debug] Closed track: ${current_define_name} with ${define_commands.len} commands')
+						println('[Debug] Closed track: ${current_define_name}')
 					}
 					current_define_name = ''
 					continue
@@ -1151,7 +1578,7 @@ fn main() {
 				base_note: base_note
 			}
 			if debug_enabled {
-				println('[Debug] Loaded WAV sample: ${name} from ${path}')
+				println('[Debug] Loaded WAV sample: ${name}')
 			}
 		} else if first_token == 'LOAD_MULTISAMPLE' {
 			if parts.len < 2 {
@@ -1177,7 +1604,7 @@ fn main() {
 				}
 				multi_samples[inst_name].samples[note_name] = wav
 				if debug_enabled {
-					println('[Debug] Added sample to bank ${inst_name}: ${note_name} from ${path}')
+					println('[Debug] Added sample to bank ${inst_name}: ${note_name}')
 				}
 			} else {
 				println('[-] Error line ${i + 1}: Multi-sample instrument ${inst_name} was not loaded')
@@ -1253,7 +1680,7 @@ fn main() {
 	}
 
 	if current_define_name != '' {
-		println('[!] Compilation Error: DEFINE block "${current_define_name}" was never closed with "END".')
+		println('[!] Compilation Error: DEFINE block "${current_define_name}" was never closed.')
 		return
 	}
 
@@ -1279,7 +1706,7 @@ fn main() {
 			}
 			'end' {
 				if loop_stack.len == 0 {
-					println('[!] Syntax Error (line ${cmd.line_num}): "END" statement found without a matching "DEFINE" or "LOOP" block.')
+					println('[!] Syntax Error: "END" statement found without a matching block.')
 					return
 				}
 				last_idx := loop_stack.len - 1
@@ -1307,14 +1734,11 @@ fn main() {
 					if name in defined_tracks {
 						track_cmds := defined_tracks[name]
 						fx := track_effects[name] or { []string{} }
-						if debug_enabled {
-							println('[Debug] Thread Spawn: Executing track "${name}" concurrently (Volume: ${vol})')
-						}
 						threads << go interpret_track(track_cmds, single_samples, multi_samples,
 							custom_synths, active_shaders, fx, sample_rate)
 						track_vols << vol
 					} else {
-						println('[-] Error: Defined track "${name}" not found for concurrent playback.')
+						println('[-] Error: Defined track "${name}" not found.')
 					}
 				}
 
@@ -1383,12 +1807,9 @@ fn main() {
 	}
 
 	if render_ranges.len > 0 {
-		println('[*] Splicing requested render ranges (Render Breakpoints)...')
+		println('[*] Splicing requested render ranges...')
 		mut master_sliced_pcm := []f64{}
 		for r in render_ranges {
-			if debug_enabled {
-				println('[Debug] Splicing range: ${r.start_sec}s to ${r.end_sec}s')
-			}
 			mut start_idx := int(r.start_sec * f64(sample_rate)) * 2
 			mut end_idx := int(r.end_sec * f64(sample_rate)) * 2
 
@@ -1410,6 +1831,21 @@ fn main() {
 			}
 		}
 		master_wet_pcm = master_sliced_pcm.clone()
+	}
+
+	if has_slice_first {
+		mut limit_samples := int(slice_first_secs * f64(sample_rate)) * 2
+		if limit_samples > master_wet_pcm.len {
+			limit_samples = master_wet_pcm.len
+		}
+		master_wet_pcm = master_wet_pcm[0..limit_samples].clone()
+	} else if has_slice_last {
+		mut limit_samples := int(slice_last_secs * f64(sample_rate)) * 2
+		if limit_samples > master_wet_pcm.len {
+			limit_samples = master_wet_pcm.len
+		}
+		start_idx := master_wet_pcm.len - limit_samples
+		master_wet_pcm = master_wet_pcm[start_idx..].clone()
 	}
 
 	mut pcm_data := []u8{}
