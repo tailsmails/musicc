@@ -123,6 +123,9 @@ mut:
 	chorus_buf_l  [][]f64
 	chorus_buf_r  [][]f64
 	chorus_idx    []int
+	reverse_buf_l [][]f64
+	reverse_buf_r [][]f64
+	reverse_idx   []int
 }
 
 struct RenderRange {
@@ -520,6 +523,9 @@ fn compile_shader(sh AudioShader) FastAudioShader {
 		chorus_buf_l: [][]f64{len: next_id}
 		chorus_buf_r: [][]f64{len: next_id}
 		chorus_idx: []int{len: next_id, init: 0}
+		reverse_buf_l: [][]f64{len: next_id}
+		reverse_buf_r: [][]f64{len: next_id}
+		reverse_idx: []int{len: next_id, init: 0}
 	}
 }
 
@@ -566,6 +572,13 @@ fn clone_fast_shaders(shaders map[string]FastAudioShader) map[string]FastAudioSh
 			cloned_chorus_buf_r[i_id] = sh.chorus_buf_r[i_id].clone()
 		}
 
+		mut cloned_reverse_buf_l := [][]f64{len: sh.reverse_buf_l.len}
+		mut cloned_reverse_buf_r := [][]f64{len: sh.reverse_buf_r.len}
+		for i_id in 0 .. sh.reverse_buf_l.len {
+			cloned_reverse_buf_l[i_id] = sh.reverse_buf_l[i_id].clone()
+			cloned_reverse_buf_r[i_id] = sh.reverse_buf_r[i_id].clone()
+		}
+
 		cloned[name] = FastAudioShader{
 			name: sh.name
 			instructions: sh.instructions.clone()
@@ -589,6 +602,9 @@ fn clone_fast_shaders(shaders map[string]FastAudioShader) map[string]FastAudioSh
 			chorus_buf_l: cloned_chorus_buf_l
 			chorus_buf_r: cloned_chorus_buf_r
 			chorus_idx: sh.chorus_idx.clone()
+			reverse_buf_l: cloned_reverse_buf_l
+			reverse_buf_r: cloned_reverse_buf_r
+			reverse_idx: sh.reverse_idx.clone()
 		}
 	}
 	return cloned
@@ -621,6 +637,55 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 					dl.write_idx = (dl.write_idx + 1) % dl.buffer_l.len
 					shader.delays[id] = dl
 				}
+			}
+			'reverse' {
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				block_size := if inst.args.len > 0 { int(inst.args[0].val) } else { 22050 }
+
+				if shader.reverse_buf_l[id].len == 0 {
+					shader.reverse_buf_l[id] = []f64{len: block_size * 2, init: 0.0}
+					shader.reverse_buf_r[id] = []f64{len: block_size * 2, init: 0.0}
+					shader.reverse_idx[id] = 0
+				}
+
+				mut buf_l := shader.reverse_buf_l[id]
+				mut buf_r := shader.reverse_buf_r[id]
+				mut idx := shader.reverse_idx[id]
+
+				write_idx := idx
+				buf_l[write_idx] = val_l
+				buf_r[write_idx] = val_r
+
+				write_block := idx / block_size
+				read_block := 1 - write_block
+
+				write_offset := idx % block_size
+				read_offset := (block_size - 1) - write_offset
+				read_idx := read_block * block_size + read_offset
+
+				mut out_l := buf_l[read_idx]
+				mut out_r := buf_r[read_idx]
+				
+				fade_samples := 350
+				mut gain := 1.0
+				if write_offset < fade_samples {
+					gain = f64(write_offset) / f64(fade_samples)
+				} else if write_offset > block_size - fade_samples {
+					gain = f64(block_size - write_offset) / f64(fade_samples)
+				}
+
+				out_l *= gain
+				out_r *= gain
+
+				idx = (idx + 1) % (block_size * 2)
+
+				shader.reverse_buf_l[id] = buf_l
+				shader.reverse_buf_r[id] = buf_r
+				shader.reverse_idx[id] = idx
+
+				shader.vars_l[id] = out_l
+				shader.vars_r[id] = out_r
 			}
 			'mix' {
 				mut sum_l := 0.0
@@ -688,16 +753,24 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 				filter_type := inst.str_args[0]
 				cutoff := inst.args[0].val
 
+				mut safe_cutoff := cutoff
+				if safe_cutoff < 0.001 {
+					safe_cutoff = 0.001
+				}
+				if safe_cutoff > 0.999 {
+					safe_cutoff = 0.999
+				}
+
 				mut prev_l := shader.prev_filter_l[id]
 				mut prev_r := shader.prev_filter_r[id]
 				if filter_type == 'lowpass' {
-					prev_l = prev_l + cutoff * (val_l - prev_l)
-					prev_r = prev_r + cutoff * (val_r - prev_r)
+					prev_l = prev_l + safe_cutoff * (val_l - prev_l)
+					prev_r = prev_r + safe_cutoff * (val_r - prev_r)
 					shader.vars_l[id] = prev_l
 					shader.vars_r[id] = prev_r
 				} else if filter_type == 'highpass' {
-					prev_l = prev_l + cutoff * (val_l - prev_l)
-					prev_r = prev_r + cutoff * (val_r - prev_r)
+					prev_l = prev_l + safe_cutoff * (val_l - prev_l)
+					prev_r = prev_r + safe_cutoff * (val_r - prev_r)
 					shader.vars_l[id] = val_l - prev_l
 					shader.vars_r[id] = val_r - prev_r
 				}
@@ -1418,33 +1491,54 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 								}
 
 								v_freq := freq * detune_mult
-								mut phase := 2.0 * math.pi * v_freq * t
-
-								if synth.fm_ratio > 0.0 {
-									modulator_phase := 2.0 * math.pi *
-										(v_freq * synth.fm_ratio) * t
-									phase += fm_index * math.sin(modulator_phase)
-								}
+								dt := v_freq / sample_rate
 
 								mut voice_val := 0.0
+								
+								t_frac := math.fmod(v_freq * t, 1.0)
+								mut positive_t_frac := t_frac
+								if positive_t_frac < 0.0 {
+									positive_t_frac += 1.0
+								}
+
 								match synth.osc_type {
 									'sawtooth' {
-										voice_val = 2.0 *
-											(phase / (2.0 * math.pi) -
-											math.floor(0.5 + phase / (2.0 * math.pi)))
+										naive := 2.0 * positive_t_frac - 1.0
+										mut blep_corr := 0.0
+										if positive_t_frac < dt {
+											t_val := positive_t_frac / dt
+											blep_corr = t_val + t_val - t_val * t_val - 1.0
+										} else if positive_t_frac > 1.0 - dt {
+											t_val := (positive_t_frac - 1.0) / dt
+											blep_corr = t_val * t_val + t_val + t_val + 1.0
+										}
+										voice_val = naive - blep_corr
 									}
 									'square' {
-										voice_val = if math.sin(phase) >= 0.0 {
-											1.0
-										} else {
-											-1.0
+										naive := if positive_t_frac < 0.5 { 1.0 } else { -1.0 }
+										
+										mut corr0 := 0.0
+										if positive_t_frac < dt {
+											t_val := positive_t_frac / dt
+											corr0 = t_val + t_val - t_val * t_val - 1.0
+										} else if positive_t_frac > 1.0 - dt {
+											t_val := (positive_t_frac - 1.0) / dt
+											corr0 = t_val * t_val + t_val + t_val + 1.0
 										}
+
+										t_frac_shifted := math.fmod(positive_t_frac + 0.5, 1.0)
+										mut corr1 := 0.0
+										if t_frac_shifted < dt {
+											t_val := t_frac_shifted / dt
+											corr1 = t_val + t_val - t_val * t_val - 1.0
+										} else if t_frac_shifted > 1.0 - dt {
+											t_val := (t_frac_shifted - 1.0) / dt
+											corr1 = t_val * t_val + t_val + t_val + 1.0
+										}
+										voice_val = naive + corr0 - corr1
 									}
 									'triangle' {
-										voice_val = 2.0 *
-											math.abs(2.0 *
-											(phase / (2.0 * math.pi) -
-											math.floor(0.5 + phase / (2.0 * math.pi)))) - 1.0
+										voice_val = 2.0 * math.abs(2.0 * (positive_t_frac - math.floor(0.5 + positive_t_frac))) - 1.0
 									}
 									'noise' {
 										mut seed := u32(123456789 + i + v_idx * 99)
@@ -1452,6 +1546,11 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 										voice_val = f64(int(seed) % 2000) / 1000.0 - 1.0
 									}
 									else {
+										mut phase := 2.0 * math.pi * v_freq * t
+										if synth.fm_ratio > 0.0 {
+											modulator_phase := 2.0 * math.pi * (v_freq * synth.fm_ratio) * t
+											phase += fm_index * math.sin(modulator_phase)
+										}
 										voice_val = math.sin(phase)
 									}
 								}
