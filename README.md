@@ -7,7 +7,8 @@ Musicc is a lightweight, high-performance command-line music compiler, modular s
 ### 1. Custom Synthesizer & ADSR Engine (Multi-Voice Unison)
 - **Advanced Multi-Voice Unison & Stereo Detuning**: Musicc can generate thick, wide analog chorus and supersaw textures by stacking up to $N$ unison oscillators.
     - *Constant-Power Stereo Widening*: Stacked oscillators are dynamically spread across the stereo field and detuned by a fractional offset ($1.0 \pm offset \times 0.006$) to construct a rich, non-coincidive stereo image.
-- **Waveform Generators**: Includes Sine, Square, Sawtooth, Triangle, and a hardware-emulating White Noise generator.
+- **Waveform Generators with PolyBLEP Anti-Aliasing**: Includes Sine, Triangle, and PolyBLEP-corrected Square and Sawtooth generators, alongside a hardware-emulating White Noise generator.
+    - *Aliasing Suppression*: By employing Polynomial Band-Limited Step (PolyBLEP) phase-correction, the engine mitigates high-frequency digital aliasing artifacts, yielding a warmer, analog-like timbre.
     - *Hardware-Level Noise Emulation*: Noise is synthesized using an ultra-fast, inline Linear Congruential Generator (LCG) pseudo-random loop, bypassing standard heap-allocated random libraries to run at sample-rate speed.
 - **Proportional ADSR Envelope Auto-Scaling**: Features a complete Attack, Decay, Sustain, and Release (ADSR) envelope module.
     - *Anti-Click Phase Scaling*: If a note's total duration ($D$) is shorter than the sum of its defined ADSR phases ($A + D_{decay} + R$), the engine mathematically compresses all phases proportionally ($scale = D / \sum_{ADR}$), guaranteeing a click-free execution of the volume curve under any high-tempo condition.
@@ -18,9 +19,10 @@ Musicc is a lightweight, high-performance command-line music compiler, modular s
 - **Zero-Allocation Audio VM**: Processing complex effects on $44,100$ samples per second across multiple tracks can trigger millions of heap allocations. By pre-populating registers and variable lookup slots (`vars_l`, `vars_r`) at parse-time, the shader virtual machine executes with a **Zero-Allocation** heap footprint inside the hot audio loop, accelerating compilation speeds.
 - **Comprehensive Shader Instructions**:
     - `DELAY`: Stereo delay line with adjustable buffer sizes and feedback coefficients.
+    - `REVERSE`: Real-time, double-buffered block-reversing processor. It slices incoming audio into rhythmic blocks of variable size (e.g., 250ms) and plays each segment backwards. Features integrated edge-windowing envelopes (~8ms linear fades) to suppress transient click and pop noises at block boundaries.
     - `MIX`: Linear summation of signals with weighted constant values.
     - `SATURATE`: Non-linear waveshaping distortion utilizing hyperbolic tangent (`tanh` tape saturation), cubic (`soft`), limiter (`hard`), or wavefolding (`fold`) curves.
-    - `FILTER`: Dynamic, sweeping 1-pole Low-pass and High-pass smoothing filters.
+    - `FILTER`: Dynamic, sweeping 1-pole Low-pass and High-pass smoothing filters. Coefficients are automatically clamped within a stable $[0.001, 0.999]$ range to ensure mathematical stability under extreme modulation or LFO sweeps.
     - `COMPRESSOR`: Studio-grade feed-forward dynamic range compressor with DB-domain envelope detection, variable threshold, ratio, attack, release, and makeup gain.
     - `SVF`: 2-pole resonant State Variable Filter offering Low-pass, High-pass, Band-pass, and Notch responses with adjustable Q-resonance factor.
     - `REVERB`: High-density Schroeder reverberator utilizing 4 parallel feedback comb filters with high-frequency absorption (Damp), stereophonic delay-spread, and wet/dry blend controls.
@@ -36,7 +38,7 @@ Musicc is a lightweight, high-performance command-line music compiler, modular s
 
 ### 3. Resampling & Slicing Sampler (Multi-Sample Bank Engine)
 - **Robust Audio File Decoding**: Supports mono/stereo, 8, 16, 24, and 32-bit IEEE float uncompressed PCM WAV files.
-- **Linear Interpolation Resampling**: Shifts the playback pitch of samples using fractional index tracking combined with linear interpolation preventing aliasing artifacts during high-ratio transposition.
+- **Linear Interpolation Resampling**: Shifts the playback pitch of samples using fractional index tracking combined with linear interpolation ($val_1 + frac \times (val_2 - val_1)$), preventing aliasing artifacts during high-ratio transposition.
 - **Nearest-Semitone Multi-Sampling**: In multi-sampling mode, when a note is requested, the compiler searches the registered bank for the nearest defined semitone, calculates the distance, and automatically pitch-shifts the sample.
 - **Millisecond-Precision Slicing**: Allows real-time sample cropping using the syntax `<start_ms>-<end_ms>`. Slicing is performed on the fly with zero memory copies by shifting the pointer's base offset.
 - **One-Shot Auto-Duration**: Specifying a duration of `0` tells the engine to automatically calculate the sample's full duration (adjusted for its pitch ratio) and play it to the end without truncation.
@@ -88,15 +90,16 @@ DEBUG_MODE ON
 MASTER_VOLUME 0.8
 MASTER_EFFECT space_echo
 
-# 1. Custom Synthesizer with ADSR
+# 1. Custom Synthesizer with ADSR & PolyBLEP Antialiasing
 DEFINE_SYNTH acid_bass sawtooth 5 0.1 0 0.15 10 120 0.5 150
 
-# 2. Fragment Audio Shader with Advanced Processing
+# 2. Fragment Audio Shader with Advanced Processing & Block Reverse
 DEFINE_EFFECT space_echo
     svf y lowpass 800.0 1.2
     compressor y -16.0 3.5 10.0 150.0 3.0
     vowel y o 0.75
     wavefolder y 3.5
+    reverse y 11025 # Glitchy 250ms block reverse with anti-click windowing
     reverb y 0.7 0.3 0.25 0.85
     ms_width y 1.5
 END
