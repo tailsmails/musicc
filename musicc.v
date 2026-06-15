@@ -145,6 +145,7 @@ mut:
 	end_ms        int
 	is_slice      bool
 	effects_chain []string
+	velocity      f64 = 1.0
 }
 
 struct LoopState {
@@ -1182,12 +1183,28 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 				shader.vars_r[id] = mid - side
 			}
 			'modulate' {
-				arg0 := inst.args[0]
-				in_val_l := if arg0.is_var { shader.vars_l[arg0.var_id] } else { arg0.val }
-				in_val_r := if arg0.is_var { shader.vars_r[arg0.var_id] } else { arg0.val }
-				mod_type := inst.str_args[0]
-				mod_freq := inst.args[1].val
-				depth := inst.args[2].val
+				mut in_val_l := shader.vars_l[0]
+				mut in_val_r := shader.vars_r[0]
+				mut mod_freq := 1.0
+				mut depth := 0.5
+				mut mod_type := 'tremolo'
+
+				if inst.str_args.len > 0 {
+					mod_type = inst.str_args[0]
+				}
+
+				if inst.args.len >= 3 {
+					arg0 := inst.args[0]
+					in_val_l = if arg0.is_var { shader.vars_l[arg0.var_id] } else { arg0.val }
+					in_val_r = if arg0.is_var { shader.vars_r[arg0.var_id] } else { arg0.val }
+					mod_freq = inst.args[1].val
+					depth = inst.args[2].val
+				} else if inst.args.len == 2 {
+					in_val_l = shader.vars_l[id]
+					in_val_r = shader.vars_r[id]
+					mod_freq = inst.args[0].val
+					depth = inst.args[1].val
+				}
 
 				mut mod_sig := 1.0
 				if mod_type == 'tremolo' {
@@ -1351,6 +1368,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 							}
 							sample_val *= env
 						}
+						sample_val *= cmd.velocity
 						generated_pcm << sample_val
 					}
 				} else if cmd.wave_type in multi_samples {
@@ -1419,6 +1437,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 								}
 								sample_val *= env
 							}
+							sample_val *= cmd.velocity
 							generated_pcm << sample_val
 						}
 					}
@@ -1575,6 +1594,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 
 							sample_val *= lfo_vol * adsr_env
 						}
+						sample_val *= cmd.velocity
 						generated_pcm << sample_val
 					}
 				} else {
@@ -1661,6 +1681,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 								}
 							}
 						}
+						sample_val *= cmd.velocity
 						generated_pcm << sample_val
 					}
 				}
@@ -1772,25 +1793,35 @@ fn main() {
 		}
 
 		parts := trimmed.split(' ')
-		first_token := parts[0].to_upper()
+		mut parsed_parts := []string{}
+		for p in parts {
+			if p.trim_space() != '' {
+				parsed_parts << p.trim_space()
+			}
+		}
+		if parsed_parts.len == 0 {
+			continue
+		}
+
+		first_token := parsed_parts[0].to_upper()
 
 		if first_token == 'DEBUG_MODE' {
-			if parts.len > 1 && parts[1].to_upper() == 'ON' {
+			if parsed_parts.len > 1 && parsed_parts[1].to_upper() == 'ON' {
 				debug_enabled = true
 			}
 			continue
 		}
 
 		if first_token == 'BASE_PITCH' {
-			if parts.len > 1 {
-				base_pitch = parts[1].f64()
+			if parsed_parts.len > 1 {
+				base_pitch = parsed_parts[1].f64()
 			}
 			continue
 		}
 
 		if first_token == 'RENDER_RANGE' {
-			if parts.len > 1 {
-				range_parts := parts[1].split('-')
+			if parsed_parts.len > 1 {
+				range_parts := parsed_parts[1].split('-')
 				if range_parts.len == 2 {
 					render_ranges << RenderRange{
 						start_sec: range_parts[0].f64()
@@ -1802,25 +1833,25 @@ fn main() {
 		}
 
 		if first_token == 'MASTER_VOLUME' {
-			if parts.len > 1 {
-				master_volume_factor = parts[1].f64()
+			if parsed_parts.len > 1 {
+				master_volume_factor = parsed_parts[1].f64()
 			}
 			continue
 		}
 
 		if first_token == 'MASTER_EFFECT' {
-			if parts.len > 1 {
-				master_effects = parts[1..].clone()
+			if parsed_parts.len > 1 {
+				master_effects = parsed_parts[1..].clone()
 			}
 			continue
 		}
 
 		if first_token == 'DEFINE_EFFECT' {
-			if parts.len < 2 {
+			if parsed_parts.len < 2 {
 				println('[!] Syntax Error (line ${i + 1}): DEFINE_EFFECT needs a name')
 				return
 			}
-			current_fx_name = parts[1].to_lower()
+			current_fx_name = parsed_parts[1].to_lower()
 			fx_instructions = []ShaderInstruction{}
 			fx_delays = map[string]DelayLine{}
 			if debug_enabled {
@@ -1873,11 +1904,11 @@ fn main() {
 				continue
 			}
 
-			op := parts[0].to_lower()
+			op := parsed_parts[0].to_lower()
 			if op == 'delay' {
-				name := parts[1]
-				size := parts[2].int()
-				feedback := parts[3].f64()
+				name := parsed_parts[1]
+				size := parsed_parts[2].int()
+				feedback := parsed_parts[3].f64()
 				fx_delays[name] = DelayLine{
 					buffer_l: []f64{len: size, init: 0.0}
 					buffer_r: []f64{len: size, init: 0.0}
@@ -1887,11 +1918,11 @@ fn main() {
 				fx_instructions << ShaderInstruction{
 					op: 'delay'
 					out_var: name
-					args: parts[1..]
+					args: parsed_parts[1..].clone()
 				}
 			} else {
-				out_var := parts[1]
-				args := parts[2..]
+				out_var := parsed_parts[1]
+				args := parsed_parts[2..].clone()
 				fx_instructions << ShaderInstruction{
 					op: op
 					out_var: out_var
@@ -1902,27 +1933,27 @@ fn main() {
 		}
 
 		if first_token == 'DEFINE_SYNTH' {
-			if parts.len < 7 {
+			if parsed_parts.len < 7 {
 				println('[!] Syntax Error (line ${i + 1}): DEFINE_SYNTH requires at least 6 arguments')
 				return
 			}
-			name := parts[1].to_lower()
-			osc_type := parts[2].to_lower()
-			detune_voices := parts[3].int()
-			lfo_freq := parts[4].f64()
-			fm_ratio := parts[5].f64()
-			filter_cutoff := parts[6].f64()
+			name := parsed_parts[1].to_lower()
+			osc_type := parsed_parts[2].to_lower()
+			detune_voices := parsed_parts[3].int()
+			lfo_freq := parsed_parts[4].f64()
+			fm_ratio := parsed_parts[5].f64()
+			filter_cutoff := parsed_parts[6].f64()
 
 			mut attack_ms := 10
 			mut decay_ms := 10
 			mut sustain_level := 1.0
 			mut release_ms := 10
 
-			if parts.len >= 11 {
-				attack_ms = parts[7].int()
-				decay_ms = parts[8].int()
-				sustain_level = parts[9].f64()
-				release_ms = parts[10].int()
+			if parsed_parts.len >= 11 {
+				attack_ms = parsed_parts[7].int()
+				decay_ms = parsed_parts[8].int()
+				sustain_level = parsed_parts[9].f64()
+				release_ms = parsed_parts[10].int()
 			}
 
 			custom_synths[name] = CustomSynth{
@@ -1944,11 +1975,11 @@ fn main() {
 		}
 
 		if first_token == 'DEFINE' {
-			if parts.len < 2 {
+			if parsed_parts.len < 2 {
 				println('[!] Syntax Error (line ${i + 1}): DEFINE requires a track name')
 				return
 			}
-			track_def := parts[1].to_lower()
+			track_def := parsed_parts[1].to_lower()
 			sub_parts := track_def.split('|')
 			current_define_name = sub_parts[0]
 			define_depth = 1
@@ -1981,7 +2012,7 @@ fn main() {
 			}
 
 			if first_token == 'LOOP' {
-				count := if parts.len > 1 { parts[1].int() } else { 1 }
+				count := if parsed_parts.len > 1 { parsed_parts[1].int() } else { 1 }
 				define_commands << Command{
 					line_num: i + 1
 					cmd_type: 'loop'
@@ -1993,11 +2024,11 @@ fn main() {
 					cmd_type: 'end'
 				}
 			} else {
-				if parts.len < 2 {
+				if parsed_parts.len < 2 {
 					continue
 				}
-				note := parts[0]
-				duration_str := parts[1]
+				note := parsed_parts[0]
+				duration_str := parsed_parts[1]
 				mut duration_ms := 0
 				mut start_ms := 0
 				mut end_ms := 0
@@ -2021,13 +2052,18 @@ fn main() {
 
 				mut wave_type := 'sine'
 				mut effects_chain := []string{}
-				if parts.len >= 3 {
-					instrument_part := parts[2].to_lower()
+				if parsed_parts.len >= 3 {
+					instrument_part := parsed_parts[2].to_lower()
 					sub_parts := instrument_part.split('|')
 					wave_type = sub_parts[0]
 					if sub_parts.len > 1 {
 						effects_chain = sub_parts[1..].clone()
 					}
+				}
+
+				mut velocity := 1.0
+				if parsed_parts.len >= 4 {
+					velocity = parsed_parts[3].f64()
 				}
 
 				define_commands << Command{
@@ -2040,18 +2076,19 @@ fn main() {
 					end_ms: end_ms
 					is_slice: is_slice
 					effects_chain: effects_chain
+					velocity: velocity
 				}
 			}
 			continue
 		}
 
 		if first_token == 'LOAD_SAMPLE' {
-			if parts.len < 4 {
+			if parsed_parts.len < 4 {
 				continue
 			}
-			name := parts[1].to_lower()
-			path := parts[2]
-			base_note := parts[3]
+			name := parsed_parts[1].to_lower()
+			path := parsed_parts[2]
+			base_note := parsed_parts[3]
 			wav := load_wav(path)
 			if !wav.success {
 				println('[-] Warning: Sample at line ${i + 1} was not loaded.')
@@ -2066,21 +2103,21 @@ fn main() {
 				println('[Debug] Loaded WAV sample: ${name}')
 			}
 		} else if first_token == 'LOAD_MULTISAMPLE' {
-			if parts.len < 2 {
+			if parsed_parts.len < 2 {
 				continue
 			}
-			name := parts[1].to_lower()
+			name := parsed_parts[1].to_lower()
 			multi_samples[name] = MultiSampleInstrument{
 				name: name
 				samples: map[string]WavSample{}
 			}
 		} else if first_token == 'ADD_SAMPLE' {
-			if parts.len < 4 {
+			if parsed_parts.len < 4 {
 				continue
 			}
-			inst_name := parts[1].to_lower()
-			note_name := parts[2]
-			path := parts[3]
+			inst_name := parsed_parts[1].to_lower()
+			note_name := parsed_parts[2]
+			path := parsed_parts[3]
 			if inst_name in multi_samples {
 				wav := load_wav(path)
 				if !wav.success {
@@ -2098,10 +2135,10 @@ fn main() {
 			commands << Command{
 				line_num: i + 1
 				cmd_type: 'play_concurrent'
-				wave_type: parts[1..].join(' ').to_lower()
+				wave_type: parsed_parts[1..].join(' ').to_lower()
 			}
 		} else if first_token == 'LOOP' {
-			count := if parts.len > 1 { parts[1].int() } else { 1 }
+			count := if parsed_parts.len > 1 { parsed_parts[1].int() } else { 1 }
 			commands << Command{
 				line_num: i + 1
 				cmd_type: 'loop'
@@ -2113,11 +2150,11 @@ fn main() {
 				cmd_type: 'end'
 			}
 		} else {
-			if parts.len < 2 {
+			if parsed_parts.len < 2 {
 				continue
 			}
-			note := parts[0]
-			duration_str := parts[1]
+			note := parsed_parts[0]
+			duration_str := parsed_parts[1]
 			mut duration_ms := 0
 			mut start_ms := 0
 			mut end_ms := 0
@@ -2141,13 +2178,18 @@ fn main() {
 
 			mut wave_type := 'sine'
 			mut effects_chain := []string{}
-			if parts.len >= 3 {
-				instrument_part := parts[2].to_lower()
+			if parsed_parts.len >= 3 {
+				instrument_part := parsed_parts[2].to_lower()
 				sub_parts := instrument_part.split('|')
 				wave_type = sub_parts[0]
 				if sub_parts.len > 1 {
 					effects_chain = sub_parts[1..].clone()
 				}
+			}
+
+			mut velocity := 1.0
+			if parsed_parts.len >= 4 {
+				velocity = parsed_parts[3].f64()
 			}
 
 			commands << Command{
@@ -2160,6 +2202,7 @@ fn main() {
 				end_ms: end_ms
 				is_slice: is_slice
 				effects_chain: effects_chain
+				velocity: velocity
 			}
 		}
 	}
