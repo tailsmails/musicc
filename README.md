@@ -16,7 +16,8 @@ multi-threaded track mixing, and sample-level DSP signal processing.
     wide analog chorus and supersaw textures by stacking up to N unison
     oscillators.
       - *Constant-Power Stereo Widening:* Stacked oscillators are dynamically
-        spread across the stereo field and detuned by a fractional offset to construct a rich, non-coincidive stereo
+        spread across the stereo field and detuned by a fractional offset
+        $(1.0 \pm \text{offset} \times 0.006)$ to construct a rich, non-coincidive stereo
         image.
   - **Waveform Generators with PolyBLEP Anti-Aliasing:** Includes Sine, Triangle,
     and PolyBLEP-corrected Square and Sawtooth generators, alongside a
@@ -30,10 +31,10 @@ multi-threaded track mixing, and sample-level DSP signal processing.
         sample-rate speed.
   - **Proportional ADSR Envelope Auto-Scaling:** Features a complete Attack, Decay,
     Sustain, and Release (ADSR) envelope module.
-      - *Anti-Click Phase Scaling:* If a note's total duration (D) is shorter than
-        the sum of its defined ADSR phases (A + D_{decay} + R), the engine
+      - *Anti-Click Phase Scaling:* If a note's total duration ($D$) is shorter than
+        the sum of its defined ADSR phases $(A + D_{\text{decay}} + R)$, the engine
         mathematically compresses all phases proportionally
-        (scale = D / \sum_{ADR}), helping prevent click or pop artifacts of the
+        $(\text{scale} = D / \sum \text{ADR})$, helping prevent click or pop artifacts of the
         volume curve under high-tempo conditions.
   - **Low-Frequency Oscillator (LFO) & Frequency Modulation (FM):** Custom synths
     can modulate their carrier phase with a secondary modulator oscillator
@@ -68,7 +69,7 @@ multi-threaded track mixing, and sample-level DSP signal processing.
         (fold) curves.
       - `filter`: Dynamic, sweeping 1-pole Low-pass and High-pass smoothing
         filters. Coefficients are automatically clamped within a stable
-        [0.001, 0.999] range to ensure mathematical stability under extreme
+        `[0.001, 0.999]` range to ensure mathematical stability under extreme
         modulation or LFO sweeps.
       - `compressor`: Studio-grade feed-forward dynamic range compressor with
         DB-domain envelope detection, variable threshold, ratio, attack,
@@ -101,7 +102,7 @@ multi-threaded track mixing, and sample-level DSP signal processing.
     float uncompressed PCM WAV files.
   - **Linear Interpolation Resampling:** Shifts the playback pitch of samples using
     fractional index tracking combined with linear interpolation
-    (val_1 + frac \times (val_2 - val_1)), preventing aliasing artifacts during
+    $(val_1 + \text{frac} \times (val_2 - val_1))$, preventing aliasing artifacts during
     high-ratio transposition.
   - **Nearest-Semitone Multi-Sampling:** In multi-sampling mode, when a note is
     requested, the compiler searches the registered bank for the nearest defined
@@ -146,12 +147,15 @@ multi-threaded track mixing, and sample-level DSP signal processing.
     `PLAY_CONCURRENT` are compiled concurrently in separate OS threads using V's
     native go concurrency model.
   - **Track Mixing Normalization:** Summed channels are mixed using the standard
-    square-root headroom formula (mixed = \sum track \times vol / \sqrt{N}),
+    square-root headroom formula:
+    
+    $$\text{mixed} = \frac{\sum (\text{track} \times \text{vol})}{\sqrt{N}}$$
+    
     protecting the dynamic range from digital clipping.
   - **Track-Level & Master-Bus Inserts:** Effects can be loaded on individual track
     channels (allowing reverb/echo tails to ring out naturally over rests) or on
     the master output bus (`MASTER_EFFECT`).
-  - **Constant-Time O(1) Splicing (Render Breakpoints):** Slices and splices
+  - **Constant-Time $O(1)$ Splicing (Render Breakpoints):** Slices and splices
     specific parts of the master float buffer using time ranges
     (`RENDER_RANGE 0.5-4.0`), allowing composers of fast, complex music (like
     Trashwave/Breakcore) to test and iterate specific segments.
@@ -246,7 +250,9 @@ PLAY_CONCURRENT bass_line:0.9
     shaders and delay line buffers (`clone_shaders`), preventing signal
     bleeding or memory race conditions between threads.
 2.  **Signal Flow:**
+    
     $$\text{Synth/Sample Oscillator} \rightarrow \text{ADSR/LFO} \rightarrow \text{Track-level Insert Shaders} \rightarrow \text{Thread Mixing} \rightarrow \text{Master-bus Shaders} \rightarrow \text{CLI Truncator} \rightarrow \text{Hard Limiter} \rightarrow \text{Stereo WAV}$$
+    
 3.  **Memory Safety:** Memory-hard operations like real-time resamplers and delay
     lines utilize pre-allocated ring buffers to guarantee $O(1)$ sample-rate
     read/write times without Garbage Collection overhead.
@@ -254,4 +260,4 @@ PLAY_CONCURRENT bass_line:0.9
 ---
 
 ## License
-![License](https://img.shields.io/badge/License-MIT-green.svg)    
+![License](https://img.shields.io/badge/License-MIT-green.svg)
