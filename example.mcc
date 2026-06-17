@@ -1,54 +1,374 @@
-MASTER_EFFECT final_space
-DEFINE_SYNTH dark_drone sawtooth 5 0.05 0 0.04
-DEFINE_SYNTH sub_pulse square 3 0.12 0 0.08
-DEFINE_SYNTH celestial_bells sine 3 0.05 3.01 0.2
-
-DEFINE_EFFECT heavy_echo
-    DELAY d1 19845 0.50
-    DELAY d2 30870 0.40
-    MIX y x 0.5 d1 0.3 d2 0.2
-    FILTER y lowpass 0.12
-    SATURATE y tanh
+SEED 555777999
+HUMANIZE ON
+BASE_PITCH 440.0
+MASTER_VOLUME 0.90
+MASTER_EFFECT master_bus
+DEFINE_SYNTH dark_pad sine 4 0.1 0.0 0.05 1000 1000 0.8 2500
+DEFINE_SYNTH warm_pad sawtooth 6 0.3 0.0 0.08 600 800 0.7 2000
+DEFINE_SYNTH dream_lead triangle 3 4.2 0.0 0.15 100 250 0.6 400
+DEFINE_SYNTH epic_lead sawtooth 8 0.5 0.3 0.12 150 400 0.7 500
+DEFINE_SYNTH deep_bass sawtooth 2 0.0 0.0 0.04 50 250 0.5 250
+DEFINE_SYNTH crystal sine 2 5.0 1.5 0.0 12 160 0.15 250
+DEFINE_EFFECT panning_arp
+autopan y 0.5
+delay d 11025 0.4
+mix y x 0.7 d 0.3
+reverb y 0.85 0.25 0.5 0.75
+END
+DEFINE_EFFECT phaser_pad
+phaser y 0.2 0.65 0.45
+reverb y 0.9 0.3 0.55 0.65
+END
+DEFINE_EFFECT gritty_bass
+saturate y soft
+filter y lowpass 0.08
+END
+DEFINE_EFFECT sweet_reverb
+reverb y 0.85 0.2 0.55 0.7
+END
+DEFINE_EFFECT ambient_delay
+delay d 13230 0.5
+mix y x 0.65 d 0.35
+END
+DEFINE_EFFECT master_bus
+compressor y -10.0 3.0 10.0 120.0 1.5
+exciter y 3200.0 1.5 0.12
 END
 
-DEFINE_EFFECT final_space
-    DELAY r1 8820 0.45
-    DELAY r2 17640 0.35
-    MIX y x 0.6 r1 0.25 r2 0.15
-    FILTER y lowpass 0.20
-    SATURATE y soft
+DEFINE intro_pad|sweet_reverb
+LOOP 2
+D3 2400 dark_pad 0.7
+BB2 2400 dark_pad 0.7
+F3 2400 dark_pad 0.7
+C3 2400 dark_pad 0.7
+END
 END
 
-DEFINE background_pad|heavy_echo
-    LOOP 2
-        C3 4000 dark_drone
-        F3 4000 dark_drone
-        Ab3 4000 dark_drone
-        G3 4000 dark_drone
-    END
+DEFINE intro_arp|panning_arp
+LOOP 2
+# Bar 1 (D Minor)
+D4 300 crystal 0.35
+F4 300 crystal 0.35
+A4 300 crystal 0.35
+D5 300 crystal 0.35
+A4 300 crystal 0.35
+F4 300 crystal 0.35
+D4 300 crystal 0.35
+F4 300 crystal 0.35
+# Bar 2 (Bb Major)
+BB3 300 crystal 0.35
+D4 300 crystal 0.35
+F4 300 crystal 0.35
+BB4 300 crystal 0.35
+F4 300 crystal 0.35
+D4 300 crystal 0.35
+BB3 300 crystal 0.35
+D4 300 crystal 0.35
+# Bar 3 (F Major)
+F3 300 crystal 0.35
+A3 300 crystal 0.35
+C4 300 crystal 0.35
+F4 300 crystal 0.35
+C4 300 crystal 0.35
+A3 300 crystal 0.35
+F3 300 crystal 0.35
+A3 300 crystal 0.35
+# Bar 4 (C Major)
+C3 300 crystal 0.35
+E3 300 crystal 0.35
+G3 300 crystal 0.35
+C4 300 crystal 0.35
+G3 300 crystal 0.35
+E3 300 crystal 0.35
+C3 300 crystal 0.35
+E3 300 crystal 0.35
+END
 END
 
-DEFINE chime_melody|heavy_echo
-    LOOP 2
-        REST 1500
-        G5 2500 celestial_bells
-        C6 2500 celestial_bells
-        REST 1500
-        Bb5 2500 celestial_bells
-        REST 1500
-        F5 2500 celestial_bells
-    END
+DEFINE verse_bass|gritty_bass
+LOOP 2
+# D Minor Bass
+LOOP 8
+D2 300 deep_bass 0.8
+END
+# Bb Major Bass
+LOOP 8
+BB2 300 deep_bass 0.8
+END
+# F Major Bass
+LOOP 8
+F2 300 deep_bass 0.8
+END
+# C Major Bass
+LOOP 8
+C2 300 deep_bass 0.8
+END
+END
 END
 
-DEFINE mid_harmony|heavy_echo
-    LOOP 2
-        C4 3000 sub_pulse
-        REST 1000
-        Eb4 3000 sub_pulse
-        REST 1000
-        G4 3000 sub_pulse
-        REST 1000
-    END
+DEFINE verse_pad|phaser_pad
+LOOP 2
+D3 2400 warm_pad 0.75
+BB2 2400 warm_pad 0.75
+F3 2400 warm_pad 0.75
+C3 2400 warm_pad 0.75
+END
 END
 
-PLAY_CONCURRENT background_pad chime_melody mid_harmony
+DEFINE verse_arp|panning_arp
+LOOP 2
+# Bar 1 (Dm)
+D4 150 crystal 0.38
+F4 150 crystal 0.38
+A4 150 crystal 0.38
+D5 150 crystal 0.38
+F5 150 crystal 0.38
+D5 150 crystal 0.38
+A4 150 crystal 0.38
+F4 150 crystal 0.38
+D4 150 crystal 0.38
+F4 150 crystal 0.38
+A4 150 crystal 0.38
+D5 150 crystal 0.38
+F5 150 crystal 0.38
+D5 150 crystal 0.38
+A4 150 crystal 0.38
+F4 150 crystal 0.38
+# Bar 2 (Bb)
+BB3 150 crystal 0.38
+D4 150 crystal 0.38
+F4 150 crystal 0.38
+BB4 150 crystal 0.38
+D5 150 crystal 0.38
+BB4 150 crystal 0.38
+F4 150 crystal 0.38
+D4 150 crystal 0.38
+BB3 150 crystal 0.38
+D4 150 crystal 0.38
+F4 150 crystal 0.38
+BB4 150 crystal 0.38
+D5 150 crystal 0.38
+BB4 150 crystal 0.38
+F4 150 crystal 0.38
+D4 150 crystal 0.38
+# Bar 3 (F)
+F3 150 crystal 0.38
+A3 150 crystal 0.38
+C4 150 crystal 0.38
+F4 150 crystal 0.38
+A4 150 crystal 0.38
+F4 150 crystal 0.38
+C4 150 crystal 0.38
+A3 150 crystal 0.38
+F3 150 crystal 0.38
+A3 150 crystal 0.38
+C4 150 crystal 0.38
+F4 150 crystal 0.38
+A4 150 crystal 0.38
+F4 150 crystal 0.38
+C4 150 crystal 0.38
+A3 150 crystal 0.38
+# Bar 4 (C)
+C3 150 crystal 0.38
+E3 150 crystal 0.38
+G3 150 crystal 0.38
+C4 150 crystal 0.38
+E4 150 crystal 0.38
+C4 150 crystal 0.38
+G3 150 crystal 0.38
+E3 150 crystal 0.38
+C3 150 crystal 0.38
+E3 150 crystal 0.38
+G3 150 crystal 0.38
+C4 150 crystal 0.38
+E4 150 crystal 0.38
+C4 150 crystal 0.38
+G3 150 crystal 0.38
+E3 150 crystal 0.38
+END
+END
+
+DEFINE verse_melody|sweet_reverb|ambient_delay
+LOOP 2
+# Bar 1
+REST 600 dream_lead 0.0
+A5 600 dream_lead 0.8
+F5 600 dream_lead 0.8
+E5 600 dream_lead 0.75
+# Bar 2
+D5 1200 dream_lead 0.8
+F5 600 dream_lead 0.8
+G5 600 dream_lead 0.8
+# Bar 3
+A5 1200 dream_lead 0.8
+C6 600 dream_lead 0.8
+G5 600 dream_lead 0.75
+# Bar 4
+E5 1800 dream_lead 0.8
+REST 600 dream_lead 0.0
+END
+END
+
+DEFINE climax_bass|gritty_bass
+LOOP 2
+# D Minor (Octave Bass)
+LOOP 4
+D2 300 deep_bass 0.85
+D3 300 deep_bass 0.75
+END
+# Bb Major (Octave Bass)
+LOOP 4
+BB2 300 deep_bass 0.85
+BB3 300 deep_bass 0.75
+END
+# G Minor (Octave Bass)
+LOOP 4
+G2 300 deep_bass 0.85
+G3 300 deep_bass 0.75
+END
+# A Major (Epic Resolution)
+LOOP 4
+A2 300 deep_bass 0.85
+A3 300 deep_bass 0.75
+END
+END
+END
+
+DEFINE climax_pad|phaser_pad
+LOOP 2
+D3 2400 warm_pad 0.8
+BB2 2400 warm_pad 0.8
+G2 2400 warm_pad 0.8
+A2 2400 warm_pad 0.8
+END
+END
+
+DEFINE climax_arp|panning_arp
+LOOP 2
+# Bar 1 (Dm)
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+A5 150 crystal 0.42
+D6 150 crystal 0.42
+A5 150 crystal 0.42
+F5 150 crystal 0.42
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+A5 150 crystal 0.42
+D6 150 crystal 0.42
+A5 150 crystal 0.42
+F5 150 crystal 0.42
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+# Bar 2 (Bb)
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+BB5 150 crystal 0.42
+D6 150 crystal 0.42
+BB5 150 crystal 0.42
+F5 150 crystal 0.42
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+BB5 150 crystal 0.42
+D6 150 crystal 0.42
+BB5 150 crystal 0.42
+F5 150 crystal 0.42
+D5 150 crystal 0.42
+F5 150 crystal 0.42
+# Bar 3 (Gm)
+D5 150 crystal 0.42
+G5 150 crystal 0.42
+BB5 150 crystal 0.42
+D6 150 crystal 0.42
+BB5 150 crystal 0.42
+G5 150 crystal 0.42
+D5 150 crystal 0.42
+G5 150 crystal 0.42
+D5 150 crystal 0.42
+G5 150 crystal 0.42
+BB5 150 crystal 0.42
+D6 150 crystal 0.42
+BB5 150 crystal 0.42
+G5 150 crystal 0.42
+D5 150 crystal 0.42
+G5 150 crystal 0.42
+# Bar 4 (A Major - C# is C#5 / C#6)
+C#5 150 crystal 0.42
+E5 150 crystal 0.42
+A5 150 crystal 0.42
+C#6 150 crystal 0.42
+A5 150 crystal 0.42
+E5 150 crystal 0.42
+C#5 150 crystal 0.42
+E5 150 crystal 0.42
+C#5 150 crystal 0.42
+E5 150 crystal 0.42
+A5 150 crystal 0.42
+C#6 150 crystal 0.42
+A5 150 crystal 0.42
+E5 150 crystal 0.42
+C#5 150 crystal 0.42
+E5 150 crystal 0.42
+END
+END
+
+DEFINE climax_lead|sweet_reverb|ambient_delay
+LOOP 2
+# Bar 1 (Dm)
+D6 1200 epic_lead 0.95
+F6 600 epic_lead 0.95
+E6 600 epic_lead 0.95
+# Bar 2 (Bb)
+F6 1200 epic_lead 0.95
+D6 600 epic_lead 0.95
+BB5 600 epic_lead 0.95
+# Bar 3 (Gm)
+BB5 1200 epic_lead 0.95
+G6 600 epic_lead 0.95
+F6 600 epic_lead 0.95
+# Bar 4 (A Major)
+E6 1800 epic_lead 0.95
+C#6 600 epic_lead 0.95
+END
+END
+
+DEFINE outro_pad|sweet_reverb
+D3 2400 dark_pad 0.75
+BB2 2400 dark_pad 0.65
+F3 2400 dark_pad 0.55
+D3 2400 dark_pad 0.40
+END
+
+DEFINE outro_arp|sweet_reverb
+# Bar 1 (Dm Decay)
+D4 300 crystal 0.35
+F4 300 crystal 0.30
+A4 300 crystal 0.25
+D5 300 crystal 0.20
+A4 300 crystal 0.15
+F4 300 crystal 0.10
+D4 300 crystal 0.05
+REST 300 crystal 0.0
+# Bar 2 (Bb Decay)
+BB3 300 crystal 0.25
+D4 300 crystal 0.20
+F4 300 crystal 0.12
+BB4 300 crystal 0.05
+REST 1200 crystal 0.0
+# Bar 3 (F Decay)
+F3 300 crystal 0.15
+A3 300 crystal 0.08
+REST 1800 crystal 0.0
+# Bar 4 (Final Fade Out)
+D3 2400 crystal 0.05
+END
+
+
+PLAY_CONCURRENT intro_pad:0.85 intro_arp:0.55
+PLAY_CONCURRENT verse_bass:0.75 verse_pad:0.80 verse_arp:0.40 verse_melody:0.85
+PLAY_CONCURRENT climax_bass:0.85 climax_pad:0.80 climax_arp:0.45 climax_lead:0.95
+PLAY_CONCURRENT outro_pad:0.80 outro_arp:0.40
