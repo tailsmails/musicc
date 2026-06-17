@@ -16,8 +16,7 @@ multi-threaded track mixing, and sample-level DSP signal processing.
     wide analog chorus and supersaw textures by stacking up to N unison
     oscillators.
       - *Constant-Power Stereo Widening:* Stacked oscillators are dynamically
-        spread across the stereo field and detuned by a fractional offset
-        (1.0 \pm offset \times 0.006) to construct a rich, non-coincidive stereo
+        spread across the stereo field and detuned by a fractional offset to construct a rich, non-coincidive stereo
         image.
   - **Waveform Generators with PolyBLEP Anti-Aliasing:** Includes Sine, Triangle,
     and PolyBLEP-corrected Square and Sawtooth generators, alongside a
