@@ -14,9 +14,9 @@ struct SingleSampleInstrument {
 }
 
 struct MultiSampleInstrument {
-	name    string
+	name string
 mut:
-	samples map[string]WavSample
+	samples map[string][]WavSample
 }
 
 struct CustomSynth {
@@ -71,10 +71,10 @@ mut:
 }
 
 struct FastMixPair {
-	is_var bool
-	var_id int
-	val    f64
-	weight f64
+	is_var  bool
+	var_id  int
+	val     f64
+	weight  f64
 }
 
 struct FastArg {
@@ -134,12 +134,12 @@ struct RenderRange {
 }
 
 struct Command {
-	line_num   int
-	cmd_type   string
-	note       string
+	line_num    int
+	cmd_type    string
+	note        string
 	duration_ms int
-	wave_type  string
-	loop_count int
+	wave_type   string
+	loop_count  int
 mut:
 	start_ms      int
 	end_ms        int
@@ -155,6 +155,12 @@ mut:
 	current_iter int
 }
 
+fn lcg_next(seed u32) (f64, u32) {
+	next_seed := seed * 1664525 + 1013904223
+	val := f64(next_seed) / 4294967296.0
+	return val, next_seed
+}
+
 fn note_to_freq(note string, base_pitch f64) f64 {
 	if note == 'REST' || note == 'P' || note == 'rest' || note == 'p' {
 		return 0.0
@@ -162,7 +168,7 @@ fn note_to_freq(note string, base_pitch f64) f64 {
 	if note.len == 0 {
 		return 0.0
 	}
-	
+
 	mut is_num := true
 	for c in note {
 		if c < `0` || c > `9` {
@@ -175,7 +181,7 @@ fn note_to_freq(note string, base_pitch f64) f64 {
 		semitones := midi_val - 69
 		return base_pitch * math.pow(2.0, f64(semitones) / 12.0)
 	}
-	
+
 	upper_note := note.to_upper()
 	note_names := ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -213,7 +219,7 @@ fn note_to_semitone(note string) int {
 	if note.len == 0 {
 		return 0
 	}
-	
+
 	mut is_num := true
 	for c in note {
 		if c < `0` || c > `9` {
@@ -623,6 +629,58 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 	for inst in shader.instructions {
 		id := inst.out_var_id
 		match inst.op {
+			'vibrato' {
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				rate := inst.args[0].val
+				depth := inst.args[1].val
+
+				buf_size := 2000
+				if shader.chorus_buf_l[id].len == 0 {
+					shader.chorus_buf_l[id] = []f64{len: buf_size, init: 0.0}
+					shader.chorus_buf_r[id] = []f64{len: buf_size, init: 0.0}
+					shader.chorus_idx[id] = 0
+				}
+				mut c_buf_l := shader.chorus_buf_l[id]
+				mut c_buf_r := shader.chorus_buf_r[id]
+				mut c_idx := shader.chorus_idx[id]
+
+				lfo := math.sin(2.0 * math.pi * rate * t)
+				delay_samples := 44.1 * (depth * (1.0 + 0.1 * lfo))
+
+				mut read_ptr := f64(c_idx) - delay_samples
+				if read_ptr < 0.0 {
+					read_ptr += f64(buf_size)
+				}
+
+				idx_floor := int(math.floor(read_ptr)) % buf_size
+				idx_ceil := (idx_floor + 1) % buf_size
+				frac := read_ptr - f64(idx_floor)
+
+				delayed_l := c_buf_l[idx_floor] * (1.0 - frac) + c_buf_l[idx_ceil] * frac
+				delayed_r := c_buf_r[idx_floor] * (1.0 - frac) + c_buf_r[idx_ceil] * frac
+
+				c_buf_l[c_idx] = val_l
+				c_buf_r[c_idx] = val_r
+				c_idx = (c_idx + 1) % buf_size
+
+				shader.chorus_buf_l[id] = c_buf_l
+				shader.chorus_buf_r[id] = c_buf_r
+				shader.chorus_idx[id] = c_idx
+
+				shader.vars_l[id] = delayed_l
+				shader.vars_r[id] = delayed_r
+			}
+			'drift' {
+				val_l := shader.vars_l[id]
+				val_r := shader.vars_r[id]
+				depth := inst.args[0].val
+
+				noise_val := math.sin(t * 1543.21) * math.cos(t * 876.54)
+
+				shader.vars_l[id] = val_l * (1.0 + noise_val * depth)
+				shader.vars_r[id] = val_r * (1.0 + noise_val * depth)
+			}
 			'delay' {
 				mut dl := shader.delays[id]
 				if dl.buffer_l.len > 0 {
@@ -667,7 +725,7 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 
 				mut out_l := buf_l[read_idx]
 				mut out_r := buf_r[read_idx]
-				
+
 				fade_samples := 350
 				mut gain := 1.0
 				if write_offset < fade_samples {
@@ -1250,10 +1308,11 @@ fn apply_fast_shader(mut shader FastAudioShader, input_l f64, input_r f64, t f64
 	return shader.vars_l[1], shader.vars_r[1]
 }
 
-fn interpret_track(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, active_shaders map[string]FastAudioShader, track_effects []string, sample_rate u32, max_samples_limit int, base_pitch f64) []f64 {
+fn interpret_track(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, active_shaders map[string]FastAudioShader, track_effects []string, sample_rate u32, max_samples_limit int, base_pitch f64, global_humanize bool, seed u32) []f64 {
 	mut local_shaders := clone_fast_shaders(active_shaders)
 	dry_pcm := interpret_track_mut(commands, single_samples, multi_samples, custom_synths, mut
-		local_shaders, sample_rate, max_samples_limit, base_pitch)
+		local_shaders, sample_rate, max_samples_limit, base_pitch, global_humanize,
+		seed)
 
 	if track_effects.len == 0 {
 		return dry_pcm
@@ -1283,15 +1342,22 @@ fn interpret_track(commands []Command, single_samples map[string]SingleSampleIns
 	return processed_pcm
 }
 
-fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]FastAudioShader, sample_rate u32, max_samples_limit int, base_pitch f64) []f64 {
+fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampleInstrument, multi_samples map[string]MultiSampleInstrument, custom_synths map[string]CustomSynth, mut active_shaders map[string]FastAudioShader, sample_rate u32, max_samples_limit int, base_pitch f64, global_humanize bool, seed u32) []f64 {
 	mut track_pcm := []f64{cap: 1000000}
 	mut loop_stack := []LoopState{}
 	mut ip := 0
 	mut prev_filter_val := 0.0
+	mut current_seed := seed
+	
+	mut local_humanize := global_humanize
 
 	for ip < commands.len {
 		cmd := commands[ip]
 		match cmd.cmd_type {
+			'humanize_toggle' {
+				local_humanize = (cmd.note == 'ON')
+				ip++
+			}
 			'loop' {
 				loop_stack << LoopState{
 					start_ip: ip + 1
@@ -1315,8 +1381,25 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 				}
 			}
 			'note' {
+				mut lcg_val := 0.0
+				
+				mut human_velocity := cmd.velocity
+				if local_humanize && cmd.note != 'REST' && cmd.note != 'P' && cmd.note != 'rest'
+					&& cmd.note != 'p' {
+					lcg_val, current_seed = lcg_next(current_seed)
+					vel_jitter := (lcg_val - 0.5) * 0.1
+					human_velocity = math.max(0.05, math.min(1.0, cmd.velocity + vel_jitter))
+				}
+				
+				mut human_duration_ms := cmd.duration_ms
+				if local_humanize && cmd.duration_ms > 15 {
+					lcg_val, current_seed = lcg_next(current_seed)
+					timing_jitter := int((lcg_val - 0.5) * 8.0)
+					human_duration_ms = cmd.duration_ms + timing_jitter
+				}
+
 				freq := note_to_freq(cmd.note, base_pitch)
-				duration_sec := f64(cmd.duration_ms) / 1000.0
+				duration_sec := f64(human_duration_ms) / 1000.0
 				num_samples := int(f64(sample_rate) * duration_sec)
 
 				mut generated_pcm := []f64{cap: num_samples}
@@ -1330,7 +1413,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 					start_src_idx := start_sec * f64(inst.sample.sample_rate)
 
 					mut actual_num_samples := num_samples
-					if cmd.duration_ms == 0 {
+					if human_duration_ms == 0 {
 						remaining_src_samples := f64(inst.sample.samples.len) - start_src_idx
 						if remaining_src_samples > 0 {
 							resampled_duration_sec := (remaining_src_samples / f64(inst.sample.sample_rate)) / ratio
@@ -1368,7 +1451,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 							}
 							sample_val *= env
 						}
-						sample_val *= cmd.velocity
+						sample_val *= human_velocity
 						generated_pcm << sample_val
 					}
 				} else if cmd.wave_type in multi_samples {
@@ -1391,54 +1474,67 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 							}
 						}
 
-						best_sample := inst.samples[best_note]
-						base_freq := note_to_freq(best_note, base_pitch)
-						ratio := if base_freq > 0.0 { freq / base_freq } else { 1.0 }
-
-						start_sec := f64(cmd.start_ms) / 1000.0
-						start_src_idx := start_sec * f64(best_sample.sample_rate)
-
-						mut actual_num_samples := num_samples
-						if cmd.duration_ms == 0 {
-							remaining_src_samples := f64(best_sample.samples.len) - start_src_idx
-							if remaining_src_samples > 0 {
-								resampled_duration_sec := (remaining_src_samples / f64(best_sample.sample_rate)) / ratio
-								actual_num_samples = int(resampled_duration_sec * f64(sample_rate))
-							} else {
-								actual_num_samples = 0
+						best_samples := inst.samples[best_note]
+						if best_samples.len == 0 {
+							for _ in 0 .. num_samples {
+								generated_pcm << 0.0
 							}
-						}
+						} else {
+							mut rr_idx := 0
+							if local_humanize && best_samples.len > 1 {
+								lcg_val, current_seed = lcg_next(current_seed)
+								rr_idx = int(lcg_val * f64(best_samples.len)) % best_samples.len
+							}
+							best_sample := best_samples[rr_idx]
 
-						for i in 0 .. actual_num_samples {
-							mut sample_val := 0.0
-							if freq > 0.0 {
-								pos := start_src_idx +
-									f64(i) * ratio * (f64(best_sample.sample_rate) / f64(sample_rate))
-								idx_floor := int(math.floor(pos))
-								idx_ceil := idx_floor + 1
-								frac := pos - f64(idx_floor)
+							base_freq := note_to_freq(best_note, base_pitch)
+							ratio := if base_freq > 0.0 { freq / base_freq } else { 1.0 }
 
-								if idx_floor >= 0 && idx_floor < best_sample.samples.len {
-									val1 := best_sample.samples[idx_floor]
-									val2 := if idx_ceil < best_sample.samples.len {
-										best_sample.samples[idx_ceil]
-									} else {
-										0.0
+							start_sec := f64(cmd.start_ms) / 1000.0
+							start_src_idx := start_sec * f64(best_sample.sample_rate)
+
+							mut actual_num_samples := num_samples
+							if human_duration_ms == 0 {
+								remaining_src_samples := f64(best_sample.samples.len) - start_src_idx
+								if remaining_src_samples > 0 {
+									resampled_duration_sec := (remaining_src_samples / f64(best_sample.sample_rate)) / ratio
+									actual_num_samples = int(resampled_duration_sec * f64(sample_rate))
+								} else {
+									actual_num_samples = 0
+								}
+							}
+
+							for i in 0 .. actual_num_samples {
+								mut sample_val := 0.0
+								if freq > 0.0 {
+									pos := start_src_idx +
+										f64(i) * ratio * (f64(best_sample.sample_rate) / f64(sample_rate))
+									idx_floor := int(math.floor(pos))
+									idx_ceil := idx_floor + 1
+									frac := pos - f64(idx_floor)
+
+									if idx_floor >= 0 && idx_floor < best_sample.samples.len {
+										val1 := best_sample.samples[idx_floor]
+										val2 := if idx_ceil < best_sample.samples.len {
+											best_sample.samples[idx_ceil]
+										} else {
+											0.0
+										}
+										sample_val = val1 + frac * (val2 - val1)
 									}
-									sample_val = val1 + frac * (val2 - val1)
-								}
 
-								fade_samples := int(0.01 * f64(sample_rate))
-								mut env := 1.0
-								if i < fade_samples {
-									env = f64(i) / f64(fade_samples)
-								} else if i > actual_num_samples - fade_samples {
-									env = f64(num_samples - i) / f64(fade_samples)
+									fade_samples := int(0.01 * f64(sample_rate))
+									mut env := 1.0
+									if i < fade_samples {
+										env = f64(i) / f64(fade_samples)
+									} else if i > actual_num_samples - fade_samples {
+										env = f64(num_samples - i) / f64(fade_samples)
+									}
+									sample_val *= env
 								}
-								sample_val *= env
+								sample_val *= human_velocity
+								generated_pcm << sample_val
 							}
-							sample_val *= cmd.velocity
-							generated_pcm << sample_val
 						}
 					}
 				} else if cmd.wave_type in custom_synths {
@@ -1508,12 +1604,17 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 									offset := f64(v_idx) - f64(voices - 1) / 2.0
 									detune_mult = 1.0 + offset * 0.006
 								}
+								
+								mut vibrato := 1.0
+								if local_humanize {
+									vibrato = 1.0 + 0.001 * math.sin(2.0 * math.pi * 5.5 * t)
+								}
 
-								v_freq := freq * detune_mult
+								v_freq := freq * detune_mult * vibrato
 								dt := v_freq / sample_rate
 
 								mut voice_val := 0.0
-								
+
 								t_frac := math.fmod(v_freq * t, 1.0)
 								mut positive_t_frac := t_frac
 								if positive_t_frac < 0.0 {
@@ -1535,7 +1636,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 									}
 									'square' {
 										naive := if positive_t_frac < 0.5 { 1.0 } else { -1.0 }
-										
+
 										mut corr0 := 0.0
 										if positive_t_frac < dt {
 											t_val := positive_t_frac / dt
@@ -1560,9 +1661,9 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 										voice_val = 2.0 * math.abs(2.0 * (positive_t_frac - math.floor(0.5 + positive_t_frac))) - 1.0
 									}
 									'noise' {
-										mut seed := u32(123456789 + i + v_idx * 99)
-										seed = seed * 1664525 + 1013904223
-										voice_val = f64(int(seed) % 2000) / 1000.0 - 1.0
+										noise_seed := u32(123456789 + i + v_idx * 99)
+										_, next_n_seed := lcg_next(noise_seed)
+										voice_val = f64(int(next_n_seed) % 2000) / 1000.0 - 1.0
 									}
 									else {
 										mut phase := 2.0 * math.pi * v_freq * t
@@ -1594,14 +1695,19 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 
 							sample_val *= lfo_vol * adsr_env
 						}
-						sample_val *= cmd.velocity
+						sample_val *= human_velocity
 						generated_pcm << sample_val
 					}
 				} else {
 					for i in 0 .. num_samples {
 						mut sample_val := 0.0
 						if freq > 0.0 {
-							angle := 2.0 * math.pi * freq * f64(i) / f64(sample_rate)
+							mut vibrato := 1.0
+							if local_humanize {
+								vibrato = 1.0 + 0.0008 * math.sin(2.0 * math.pi * 5.2 * (f64(i) / f64(sample_rate)))
+							}
+							v_freq := freq * vibrato
+							angle := 2.0 * math.pi * v_freq * f64(i) / f64(sample_rate)
 							t := f64(i) / f64(sample_rate)
 							progress := f64(i) / f64(num_samples)
 
@@ -1640,33 +1746,33 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 										env = (f64(i) / f64(attack_samples)) * decay
 									}
 									mut signal := 0.0
-									signal += 1.00 * math.sin(2.0 * math.pi * freq * t)
-									signal += 0.50 * math.sin(2.0 * math.pi * (2.0 * freq) * t)
-									signal += 0.25 * math.sin(2.0 * math.pi * (3.0 * freq) * t)
-									signal += 0.12 * math.sin(2.0 * math.pi * (4.0 * freq) * t)
-									signal += 0.06 * math.sin(2.0 * math.pi * (5.0 * freq) * t)
+									signal += 1.00 * math.sin(2.0 * math.pi * v_freq * t)
+									signal += 0.50 * math.sin(2.0 * math.pi * (2.0 * v_freq) * t)
+									signal += 0.25 * math.sin(2.0 * math.pi * (3.0 * v_freq) * t)
+									signal += 0.12 * math.sin(2.0 * math.pi * (4.0 * v_freq) * t)
+									signal += 0.06 * math.sin(2.0 * math.pi * (5.0 * v_freq) * t)
 									sample_val = (signal / 1.93) * env
 								}
 								'pluck' {
 									decay := math.exp(-6.0 * progress)
 									mut signal := 0.0
-									signal += 1.0 * math.sin(2.0 * math.pi * freq * t)
-									signal += 0.6 * math.sin(2.0 * math.pi * (2.0 * freq) * t) *
+									signal += 1.0 * math.sin(2.0 * math.pi * v_freq * t)
+									signal += 0.6 * math.sin(2.0 * math.pi * (2.0 * v_freq) * t) *
 										math.exp(-12.0 * progress)
-									signal += 0.4 * math.sin(2.0 * math.pi * (3.0 * freq) * t) *
+									signal += 0.4 * math.sin(2.0 * math.pi * (3.0 * v_freq) * t) *
 										math.exp(-18.0 * progress)
-									signal += 0.2 * math.sin(2.0 * math.pi * (4.0 * freq) * t) *
+									signal += 0.2 * math.sin(2.0 * math.pi * (4.0 * v_freq) * t) *
 										math.exp(-24.0 * progress)
 									sample_val = (signal / 2.2) * decay
 								}
 								'bell' {
 									decay := math.exp(-2.5 * progress)
 									mut signal := 0.0
-									signal += 1.0 * math.sin(2.0 * math.pi * freq * t)
-									signal += 0.6 * math.sin(2.0 * math.pi * (2.0 * freq) * t)
-									signal += 0.4 * math.sin(2.0 * math.pi * (2.4 * freq) * t)
-									signal += 0.3 * math.sin(2.0 * math.pi * (3.0 * freq) * t)
-									signal += 0.2 * math.sin(2.0 * math.pi * (3.7 * freq) * t)
+									signal += 1.0 * math.sin(2.0 * math.pi * v_freq * t)
+									signal += 0.6 * math.sin(2.0 * math.pi * (2.0 * v_freq) * t)
+									signal += 0.4 * math.sin(2.0 * math.pi * (2.4 * v_freq) * t)
+									signal += 0.3 * math.sin(2.0 * math.pi * (3.0 * v_freq) * t)
+									signal += 0.2 * math.sin(2.0 * math.pi * (3.7 * v_freq) * t)
 									sample_val = (signal / 2.5) * decay
 								}
 								else {
@@ -1681,7 +1787,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 								}
 							}
 						}
-						sample_val *= cmd.velocity
+						sample_val *= human_velocity
 						generated_pcm << sample_val
 					}
 				}
@@ -1777,6 +1883,9 @@ fn main() {
 	mut base_pitch := 440.0
 	mut commands := []Command{}
 
+	mut music_seed := u32(123456789)
+	mut humanize_engine := false
+
 	mut current_define_name := ''
 	mut define_depth := 0
 	mut define_commands := []Command{}
@@ -1804,6 +1913,34 @@ fn main() {
 		}
 
 		first_token := parsed_parts[0].to_upper()
+
+		if first_token == 'SEED' {
+			if parsed_parts.len > 1 {
+				music_seed = u32(parsed_parts[1].u64())
+			}
+			continue
+		}
+		
+		if first_token == 'HUMANIZE' {
+			state_str := if parsed_parts.len > 1 { parsed_parts[1].to_upper() } else { 'OFF' }
+			if current_define_name != '' {
+				define_commands << Command{
+					line_num: i + 1
+					cmd_type: 'humanize_toggle'
+					note: state_str
+				}
+			} else {
+				commands << Command{
+					line_num: i + 1
+					cmd_type: 'humanize_toggle'
+					note: state_str
+				}
+			}
+			if state_str == 'ON' {
+				humanize_engine = true
+			}
+			continue
+		}
 
 		if first_token == 'DEBUG_MODE' {
 			if parsed_parts.len > 1 && parsed_parts[1].to_upper() == 'ON' {
@@ -2109,7 +2246,7 @@ fn main() {
 			name := parsed_parts[1].to_lower()
 			multi_samples[name] = MultiSampleInstrument{
 				name: name
-				samples: map[string]WavSample{}
+				samples: map[string][]WavSample{}
 			}
 		} else if first_token == 'ADD_SAMPLE' {
 			if parsed_parts.len < 4 {
@@ -2124,7 +2261,7 @@ fn main() {
 					println('[-] Warning: Multi-sample at line ${i + 1} was not loaded.')
 					continue
 				}
-				multi_samples[inst_name].samples[note_name] = wav
+				multi_samples[inst_name].samples[note_name] << wav
 				if debug_enabled {
 					println('[Debug] Added sample to bank ${inst_name}: ${note_name}')
 				}
@@ -2220,6 +2357,7 @@ fn main() {
 	}
 
 	println('[*] Reference Base Pitch: ${base_pitch} Hz')
+	println('[*] Applied Generator Seed: ${music_seed}')
 	println('[*] Compiling audio shaders for DSP rendering...')
 	mut fast_active_shaders := map[string]FastAudioShader{}
 	for name, sh in active_shaders {
@@ -2276,7 +2414,8 @@ fn main() {
 						fx := track_effects[name] or { []string{} }
 						threads << spawn interpret_track(track_cmds, single_samples,
 							multi_samples, custom_synths, fast_active_shaders, fx,
-							sample_rate, max_samples_limit, base_pitch)
+							sample_rate, max_samples_limit, base_pitch, humanize_engine,
+							music_seed)
 						track_vols << vol
 					} else {
 						println('[-] Error: Defined track "${name}" not found.')
@@ -2318,7 +2457,8 @@ fn main() {
 			}
 			'note' {
 				res := interpret_track_mut([cmd], single_samples, multi_samples, custom_synths, mut
-					fast_active_shaders, sample_rate, max_samples_limit, base_pitch)
+					fast_active_shaders, sample_rate, max_samples_limit, base_pitch,
+					humanize_engine, music_seed)
 				for val in res {
 					master_dry_pcm << val
 				}
@@ -2326,6 +2466,14 @@ fn main() {
 				if max_samples_limit > 0 && (master_dry_pcm.len / 2) >= max_samples_limit {
 					master_dry_pcm = master_dry_pcm[0..max_samples_limit * 2].clone()
 					break
+				}
+				ip++
+			}
+			'humanize_toggle' {
+				if cmd.note == 'ON' {
+					humanize_engine = true
+				} else {
+					humanize_engine = false
 				}
 				ip++
 			}
@@ -2402,7 +2550,7 @@ fn main() {
 		start_idx := master_wet_pcm.len - limit_samples
 		master_wet_pcm = master_wet_pcm[start_idx..].clone()
 	}
-	
+
 	mut max_peak := 0.0
 	for sample_val in master_wet_pcm {
 		abs_val := math.abs(sample_val)
@@ -2440,7 +2588,9 @@ fn main() {
 		println('    Please check if the output directory exists and is writable.')
 		return
 	}
-	defer { outfile.close() }
+	defer {
+		outfile.close()
+	}
 
 	outfile.write(header) or { panic(err) }
 	outfile.write(pcm_data) or { panic(err) }
