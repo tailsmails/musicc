@@ -165,14 +165,6 @@ multi-threaded track mixing, and sample-level DSP signal processing.
   - **Hard-Limiting Protection:** The master output stage applies a hard-limiter,
     clipping sample values at `[-32768, 32767]` to prevent wrap-around integer
     overflow distortions.
-    
----
-    
-## Quick Start (One-Liner)
-
-```bash
-pkg update -y && pkg install -y git clang make && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/musicc && cd musicc && v -prod musicc.v -o musicc && ln -sf $(pwd)/musicc $PREFIX/bin/musicc
-```
 
 ---
 
