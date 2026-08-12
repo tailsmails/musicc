@@ -134,13 +134,13 @@ struct RenderRange {
 }
 
 struct Command {
-	line_num    int
-	cmd_type    string
-	note        string
-	duration_ms int
-	wave_type   string
-	loop_count  int
 mut:
+	line_num      int
+	cmd_type      string
+	note          string
+	duration_ms   int
+	wave_type     string
+	loop_count    int
 	start_ms      int
 	end_ms        int
 	is_slice      bool
@@ -153,6 +153,22 @@ struct LoopState {
 	total_count  int
 mut:
 	current_iter int
+}
+
+fn new_command(line_num int, cmd_type string) Command {
+	return Command{
+		line_num: line_num
+		cmd_type: cmd_type
+		note: ''
+		duration_ms: 0
+		wave_type: ''
+		loop_count: 0
+		start_ms: 0
+		end_ms: 0
+		is_slice: false
+		effects_chain: []string{}
+		velocity: 1.0
+	}
 }
 
 fn lcg_next(seed u32) (f64, u32) {
@@ -302,24 +318,32 @@ fn load_wav(path string) WavSample {
 	data := os.read_bytes(path) or {
 		println('[!] Error: File not found at: ${path}')
 		return WavSample{
+			samples: []f64{}
+			sample_rate: 0
 			success: false
 		}
 	}
 	if data.len < 44 {
 		println('[!] Error: File ${path} is too small to be a valid WAV.')
 		return WavSample{
+			samples: []f64{}
+			sample_rate: 0
 			success: false
 		}
 	}
 	if data[0] != `R` || data[1] != `I` || data[2] != `F` || data[3] != `F` {
 		println('[!] Error: File ${path} is not a valid RIFF/WAV.')
 		return WavSample{
+			samples: []f64{}
+			sample_rate: 0
 			success: false
 		}
 	}
 	if data[8] != `W` || data[9] != `A` || data[10] != `V` || data[11] != `E` {
 		println('[!] Error: File ${path} is not a valid WAVE file.')
 		return WavSample{
+			samples: []f64{}
+			sample_rate: 0
 			success: false
 		}
 	}
@@ -339,6 +363,8 @@ fn load_wav(path string) WavSample {
 	if data_idx == -1 {
 		println('[!] Error: Could not find "data" chunk in WAV file: ${path}')
 		return WavSample{
+			samples: []f64{}
+			sample_rate: 0
 			success: false
 		}
 	}
@@ -385,6 +411,8 @@ fn load_wav(path string) WavSample {
 	} else {
 		println('[!] Error: Unsupported WAV format in ${path}')
 		return WavSample{
+			samples: []f64{}
+			sample_rate: 0
 			success: false
 		}
 	}
@@ -1348,7 +1376,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 	mut ip := 0
 	mut prev_filter_val := 0.0
 	mut current_seed := seed
-	
+
 	mut local_humanize := global_humanize
 
 	for ip < commands.len {
@@ -1382,7 +1410,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 			}
 			'note' {
 				mut lcg_val := 0.0
-				
+
 				mut human_velocity := cmd.velocity
 				if local_humanize && cmd.note != 'REST' && cmd.note != 'P' && cmd.note != 'rest'
 					&& cmd.note != 'p' {
@@ -1390,7 +1418,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 					vel_jitter := (lcg_val - 0.5) * 0.1
 					human_velocity = math.max(0.05, math.min(1.0, cmd.velocity + vel_jitter))
 				}
-				
+
 				mut human_duration_ms := cmd.duration_ms
 				if local_humanize && cmd.duration_ms > 15 {
 					lcg_val, current_seed = lcg_next(current_seed)
@@ -1604,7 +1632,7 @@ fn interpret_track_mut(commands []Command, single_samples map[string]SingleSampl
 									offset := f64(v_idx) - f64(voices - 1) / 2.0
 									detune_mult = 1.0 + offset * 0.006
 								}
-								
+
 								mut vibrato := 1.0
 								if local_humanize {
 									vibrato = 1.0 + 0.001 * math.sin(2.0 * math.pi * 5.5 * t)
@@ -1920,21 +1948,17 @@ fn main() {
 			}
 			continue
 		}
-		
+
 		if first_token == 'HUMANIZE' {
 			state_str := if parsed_parts.len > 1 { parsed_parts[1].to_upper() } else { 'OFF' }
 			if current_define_name != '' {
-				define_commands << Command{
-					line_num: i + 1
-					cmd_type: 'humanize_toggle'
-					note: state_str
-				}
+				mut c := new_command(i + 1, 'humanize_toggle')
+				c.note = state_str
+				define_commands << c
 			} else {
-				commands << Command{
-					line_num: i + 1
-					cmd_type: 'humanize_toggle'
-					note: state_str
-				}
+				mut c := new_command(i + 1, 'humanize_toggle')
+				c.note = state_str
+				commands << c
 			}
 			if state_str == 'ON' {
 				humanize_engine = true
@@ -2150,16 +2174,11 @@ fn main() {
 
 			if first_token == 'LOOP' {
 				count := if parsed_parts.len > 1 { parsed_parts[1].int() } else { 1 }
-				define_commands << Command{
-					line_num: i + 1
-					cmd_type: 'loop'
-					loop_count: count
-				}
+				mut c := new_command(i + 1, 'loop')
+				c.loop_count = count
+				define_commands << c
 			} else if first_token == 'END' {
-				define_commands << Command{
-					line_num: i + 1
-					cmd_type: 'end'
-				}
+				define_commands << new_command(i + 1, 'end')
 			} else {
 				if parsed_parts.len < 2 {
 					continue
@@ -2203,18 +2222,16 @@ fn main() {
 					velocity = parsed_parts[3].f64()
 				}
 
-				define_commands << Command{
-					line_num: i + 1
-					cmd_type: 'note'
-					note: note
-					duration_ms: duration_ms
-					wave_type: wave_type
-					start_ms: start_ms
-					end_ms: end_ms
-					is_slice: is_slice
-					effects_chain: effects_chain
-					velocity: velocity
-				}
+				mut c := new_command(i + 1, 'note')
+				c.note = note
+				c.duration_ms = duration_ms
+				c.wave_type = wave_type
+				c.start_ms = start_ms
+				c.end_ms = end_ms
+				c.is_slice = is_slice
+				c.effects_chain = effects_chain
+				c.velocity = velocity
+				define_commands << c
 			}
 			continue
 		}
@@ -2269,23 +2286,16 @@ fn main() {
 				println('[-] Error line ${i + 1}: Multi-sample instrument ${inst_name} was not loaded')
 			}
 		} else if first_token == 'PLAY_CONCURRENT' {
-			commands << Command{
-				line_num: i + 1
-				cmd_type: 'play_concurrent'
-				wave_type: parsed_parts[1..].join(' ').to_lower()
-			}
+			mut c := new_command(i + 1, 'play_concurrent')
+			c.wave_type = parsed_parts[1..].join(' ').to_lower()
+			commands << c
 		} else if first_token == 'LOOP' {
 			count := if parsed_parts.len > 1 { parsed_parts[1].int() } else { 1 }
-			commands << Command{
-				line_num: i + 1
-				cmd_type: 'loop'
-				loop_count: count
-			}
+			mut c := new_command(i + 1, 'loop')
+			c.loop_count = count
+			commands << c
 		} else if first_token == 'END' {
-			commands << Command{
-				line_num: i + 1
-				cmd_type: 'end'
-			}
+			commands << new_command(i + 1, 'end')
 		} else {
 			if parsed_parts.len < 2 {
 				continue
@@ -2329,18 +2339,16 @@ fn main() {
 				velocity = parsed_parts[3].f64()
 			}
 
-			commands << Command{
-				line_num: i + 1
-				cmd_type: 'note'
-				note: note
-				duration_ms: duration_ms
-				wave_type: wave_type
-				start_ms: start_ms
-				end_ms: end_ms
-				is_slice: is_slice
-				effects_chain: effects_chain
-				velocity: velocity
-			}
+			mut c := new_command(i + 1, 'note')
+			c.note = note
+			c.duration_ms = duration_ms
+			c.wave_type = wave_type
+			c.start_ms = start_ms
+			c.end_ms = end_ms
+			c.is_slice = is_slice
+			c.effects_chain = effects_chain
+			c.velocity = velocity
+			commands << c
 		}
 	}
 
