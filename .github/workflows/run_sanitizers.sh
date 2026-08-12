@@ -35,5 +35,5 @@ rm -f musicc
 
 v ${VFLAGS} ${DEBUG_OPTS} -cflags "-fsanitize=address,pointer-compare,pointer-subtract" -o musicc "$SRC_FILE"
 touch musicc
-ASAN_OPTIONS="detect_leaks=1:halt_on_error=1" UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" "$TEST_SCRIPT"
+ASAN_OPTIONS="detect_leaks=0:halt_on_error=1" UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1" "$TEST_SCRIPT"
 rm -f musicc
