@@ -16,7 +16,7 @@ fi
 chmod +x "$TEST_SCRIPT"
 
 export DEBUG_OPTS="-keepc -cg -cflags -fno-omit-frame-pointer"
-export VFLAGS="-cc clang -d no_backtrace -enable-globals -autofree"
+export VFLAGS="-cc clang -d no_backtrace -enable-globals"
 
 v ${VFLAGS} ${DEBUG_OPTS} -cflags "-fsanitize=memory" -o musicc "$SRC_FILE"
 touch musicc
