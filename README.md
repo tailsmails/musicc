@@ -6,9 +6,10 @@ structured text-based score sheets (.mcc files) into studio-grade 16-bit 44.1kHz
 Stereo WAV audio. Musicc is designed for rapid sound design, physical modeling,
 multi-threaded track mixing, and sample-level DSP signal processing.
 
-[![ASan Verified](https://img.shields.io/badge/ASan-Verified-success?style=flat-square&logo=github-actions&logoColor=white)](#)
-[![UBSan Passed](https://img.shields.io/badge/UBSan-Passed-success?style=flat-square&logo=github-actions&logoColor=white)](#)
-[![TSan Secured](https://img.shields.io/badge/TSan-Secured-success?style=flat-square&logo=github-actions&logoColor=white)](#)
+![ASan Verified](https://img.shields.io/badge/ASan-Verified-success?style=flat-square&logo=llvm&logoColor=white)
+![TSan Secured](https://img.shields.io/badge/TSan-Secured-success?style=flat-square&logo=llvm&logoColor=white)
+![UBSan Passed](https://img.shields.io/badge/UBSan-Passed-success?style=flat-square&logo=llvm&logoColor=white)
+![MSan Clean](https://img.shields.io/badge/MSan-Clean-success?style=flat-square&logo=llvm&logoColor=white)
 
 ---
 
